@@ -21,7 +21,7 @@ var HEAD = {
 };
 var MAX_FAIL = 5;             // 비밀번호 5회 틀리면
 var LOCK_SEC = 900;           // 15분 잠금
-var SESSION_DAYS = 14;        // 로그인 유지 14일
+var SESSION_DAYS = 1;         // 로그인 유지 1일 (2026-10-08, 14일에서 줄임)
 var PRES_TTL = 30;            // "편집 중" 표시 유지 30초
 var MAX_HTML = 20000;         // 칸당 최대 글자 수
 var MAX_PHOTO_HTML = 46000;   // 사진 칸(VMD 경쟁사·금주 사진) 최대 글자 수 — 시트 한 칸 한도(5만 자) 안쪽
@@ -267,6 +267,7 @@ function auth_(token) {
   for (var i = r.length - 1; i >= 0; i--) {
     if (r[i][0] === h) {
       if (new Date(r[i][2]).getTime() < now) throw authError_();
+      if (new Date(r[i][3]).getTime() + SESSION_DAYS * 86400000 < now) throw authError_();   // 발급 시각 기준으로도 검사 (기간을 줄이기 전에 받은 열쇠도 새 기준 적용)
       var u = findRoster_(r[i][1]);
       if (!u) throw authError_();
       u.who = String(r[i][4] || u.label);
