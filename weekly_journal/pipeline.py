@@ -22,6 +22,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -60,12 +61,27 @@ def post(url, body, timeout=120):
     return json.load(urllib.request.urlopen(req, timeout=timeout))
 
 
+def landed(url, key, name, pid, wait=150):
+    """404 로 응답이 끊겼을 때: 서버가 이 반영(pid)을 끝까지 저장·검증했는지 조회한다. 확인되면 그 정보를, 아니면 None."""
+    t_end = time.time() + wait
+    while time.time() < t_end:
+        time.sleep(10)
+        try:
+            r = post(url, dict(a='pageInfo', key=key, name=name), timeout=60)
+        except Exception:
+            continue
+        if r.get('ok') and r.get('pushId') == pid and r.get('verified'):
+            return r
+    return None
+
+
 def push(url, key, name, html, status, asof, tries=3):
     last = None
+    pid = uuid.uuid4().hex
     for i in range(tries):
         t1 = time.time()
         try:
-            r = post(url, dict(a='pushPage', key=key, name=name, html=html, status=status, asof=asof))
+            r = post(url, dict(a='pushPage', key=key, name=name, html=html, status=status, asof=asof, pid=pid))
             if r.get('ok'):
                 return r
             last = r.get('error') or str(r)
@@ -74,7 +90,13 @@ def push(url, key, name, html, status, asof, tries=3):
                 body = ex.read().decode('utf-8', 'replace')[:300]
             except Exception:
                 body = ''
-            last = f'HTTP {ex.code} {body!r}'
+            last = f'HTTP {ex.code} {body[:120]!r}'
+            if ex.code == 404:                   # 구글 앞단이 응답만 끊은 경우가 많다 → 서버에 실제로 저장됐는지 확인
+                log(f'[확인 중] {name}: 응답이 끊김(404, {time.time() - t1:.0f}초). 서버 저장 여부를 조회합니다...')
+                info = landed(url, key, name, pid)
+                if info:
+                    log(f'[확인됨] {name}: 서버에 저장·검증 완료')
+                    return info
         except Exception as ex:                  # 네트워크 오류는 잠깐 쉬고 재시도
             last = repr(ex)[:160]
         log(f'[재시도 {i + 1}/{tries}] {name} ({len(html):,}자, {time.time() - t1:.0f}초 걸림): {str(last)[:600]}')

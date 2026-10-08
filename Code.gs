@@ -17,7 +17,7 @@ var HEAD = {
   WEEKS: ['entity', 'week', 'status', 'changedBy', 'changedAt'],
   LOG: ['time', 'who', 'action', 'cellId', 'baseVersion', 'newVersion', 'oldHtml'],
   SESSIONS: ['tokenHash', 'id', 'expires', 'createdAt', 'who'],
-  PAGES: ['name', 'seq', 'chunk', 'status', 'asOf', 'updatedAt', 'total']
+  PAGES: ['name', 'seq', 'chunk', 'status', 'asOf', 'updatedAt', 'total', 'pushId']
 };
 var MAX_FAIL = 5;             // 비밀번호 5회 틀리면
 var LOCK_SEC = 900;           // 15분 잠금
@@ -78,6 +78,7 @@ function route_(req) {
   switch (req.a) {
     case 'login': return login_(req.id, req.password, req.who, req.site);
     case 'pushPage': return pushPage_(req);
+    case 'pageInfo': return pageInfo_(req);
     case 'page': return getPage_(auth_(req.token), req.name);
     case 'archive': return listArchive_(auth_(req.token));
     case 'pull': return pull_(auth_(req.token), req.ent, req.week, !!req.photos);
@@ -594,16 +595,30 @@ function validPage_(name) {
   return name;
 }
 
-function pushPage_(req) {
+function checkPushKey_(k) {
   var cache = CacheService.getScriptCache(), failKey = 'pushfail';
   if (Number(cache.get(failKey) || 0) >= 10) throw new Error('반영 키를 여러 번 틀려 잠시 잠겼습니다. 15분 뒤 다시 시도하세요.');
-  if (!samePushKey_(req.key)) {
+  if (!samePushKey_(k)) {
     cache.put(failKey, String(Number(cache.get(failKey) || 0) + 1), LOCK_SEC);
     throw new Error('반영 키가 맞지 않습니다.');
   }
+}
+
+/* 반영 결과 조회: 구글 앞단이 응답을 404 로 끊어도 서버는 저장을 끝냈을 수 있다. 반영 프로그램이 pushId 로 실제 저장·검증 여부를 확인한다. */
+function pageInfo_(req) {
+  checkPushKey_(req.key);
+  var name = validPage_(req.name), idx = pageRows_(name);
+  if (!idx.length) return { ok: true, found: false };
+  var pid = String(sh_(TAB.PAGES).getRange(idx[0], 8).getValue() || '');
+  var chk = readPageOnce_(name);
+  return { ok: true, found: true, pushId: pid, verified: !!chk.ok, chunks: idx.length };
+}
+
+function pushPage_(req) {
+  checkPushKey_(req.key);
   var name = validPage_(req.name), html = String(req.html || '').replace(/\r\n?/g, '\n');   // 시트는 \r 을 그대로 두지 않을 수 있어 \n 으로 통일 (HTML 모양에는 영향 없음)
   if (html.length < 1000) throw new Error('화면 내용이 비어 있습니다.');
-  var status = req.status === 'draft' ? 'draft' : 'final', asof = String(req.asof || '').slice(0, 40);
+  var status = req.status === 'draft' ? 'draft' : 'final', asof = String(req.asof || '').slice(0, 40), pid = String(req.pid || '').slice(0, 40);
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
@@ -623,12 +638,12 @@ function pushPage_(req) {
       var end = Math.min(p + CHUNK, html.length);
       var cc = html.charCodeAt(end - 1);
       if (end < html.length && cc >= 0xD800 && cc <= 0xDBFF) end--;   // 서로게이트 쌍(이모지 등)이 반으로 쪼개지지 않게
-      rows.push([name, seq, CHUNK_MARK + html.substring(p, end), status, asof, now, html.length]);   // 7번째 칸 = 화면 전체 글자 수 (읽을 때 조각이 빠지지 않았는지 확인)
+      rows.push([name, seq, CHUNK_MARK + html.substring(p, end), status, asof, now, html.length, pid]);   // 7번째 칸 = 화면 전체 글자 수 (읽을 때 조각이 빠지지 않았는지 확인), 8번째 = 반영 번호
       p = end;
     }
     var start = sh.getLastRow() + 1;
     sh.getRange(start, 3, rows.length, 1).setNumberFormat('@');         // 조각 칸을 텍스트로 먼저 지정: 첫 글자가 = + - ' 여도 수식·숫자로 바뀌지 않는다
-    sh.getRange(start, 1, rows.length, 7).setValues(rows);
+    sh.getRange(start, 1, rows.length, 8).setValues(rows);
     SpreadsheetApp.flush();
     var back = sh.getRange(start, 3, rows.length, 1).getValues();       // 조각마다 원본과 한 글자씩 대조 → 어디가 어떻게 바뀌었는지 에러 메시지로 알려 준다
     for (var b = 0; b < rows.length; b++) {
