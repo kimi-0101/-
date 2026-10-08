@@ -600,7 +600,7 @@ function pushPage_(req) {
     cache.put(failKey, String(Number(cache.get(failKey) || 0) + 1), LOCK_SEC);
     throw new Error('반영 키가 맞지 않습니다.');
   }
-  var name = validPage_(req.name), html = String(req.html || '');
+  var name = validPage_(req.name), html = String(req.html || '').replace(/\r\n?/g, '\n');   // 시트는 \r 을 그대로 두지 않을 수 있어 \n 으로 통일 (HTML 모양에는 영향 없음)
   if (html.length < 1000) throw new Error('화면 내용이 비어 있습니다.');
   var status = req.status === 'draft' ? 'draft' : 'final', asof = String(req.asof || '').slice(0, 40);
   var lock = LockService.getScriptLock();
@@ -623,6 +623,11 @@ function pushPage_(req) {
     sh.getRange(start, 3, rows.length, 1).setNumberFormat('@');         // 조각 칸을 텍스트로 먼저 지정: 첫 글자가 = + - ' 여도 수식·숫자로 바뀌지 않는다
     sh.getRange(start, 1, rows.length, 7).setValues(rows);
     SpreadsheetApp.flush();
+    var back = sh.getRange(start, 3, rows.length, 1).getValues();       // 조각마다 원본과 한 글자씩 대조 → 어디가 어떻게 바뀌었는지 에러 메시지로 알려 준다
+    for (var b = 0; b < rows.length; b++) {
+      var got = String(back[b][0]);
+      if (got !== rows[b][2]) throw new Error(diffInfo_(name, b, rows[b][2], got));
+    }
     var chk = readPageOnce_(name);                                       // 쓴 직후 읽어서 검증 (손상되면 반영 프로그램이 바로 알 수 있게 에러로 돌려준다)
     if (!chk.ok) throw new Error('시트에 저장된 화면이 손상되었습니다. 다시 반영해 주세요.');
     audit_('pipeline', 'push_page', name, '', rows.length, status + ' ' + asof);
@@ -630,6 +635,16 @@ function pushPage_(req) {
     lock.releaseLock();
   }
   return { ok: true, chunks: Math.ceil(html.length / CHUNK), status: status };
+}
+
+/** 원본 조각과 시트에서 읽은 조각이 처음 달라지는 위치와 그 주변 글자 (손상 원인 진단용) */
+function diffInfo_(name, seq, want, got) {
+  var i = 0, n = Math.min(want.length, got.length);
+  while (i < n && want.charCodeAt(i) === got.charCodeAt(i)) i++;
+  function cp(str) { var c = str.charCodeAt(i); return isNaN(c) ? '(끝)' : 'U+' + ('0000' + c.toString(16)).slice(-4).toUpperCase(); }
+  function near(str) { return JSON.stringify(str.substring(Math.max(0, i - 20), i + 30)); }
+  return '손상 진단 ' + name + ' 조각#' + seq + ': 원본 ' + want.length + '자 → 시트 ' + got.length + '자, 첫 차이 위치 ' + i
+    + ', 원본 ' + cp(want) + ' ' + near(want) + ' / 시트 ' + cp(got) + ' ' + near(got);
 }
 
 /** PAGES 탭에서 이름이 같은 조각들의 행 번호 (이름 열만 읽는다) */
