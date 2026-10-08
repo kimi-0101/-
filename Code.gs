@@ -27,6 +27,7 @@ var MAX_HTML = 20000;         // 칸당 최대 글자 수
 var MAX_PHOTO_HTML = 46000;   // 사진 칸(VMD 경쟁사·금주 사진) 최대 글자 수 — 시트 한 칸 한도(5만 자) 안쪽
 var AUTO_TRANSLATE = true;    // 저장하면 나머지 두 언어 칸을 구글 번역으로 채운다 (사람이 쓴 칸은 덮어쓰지 않음)
 var LANG_CODE = { ko: 'ko', en: 'en', zh: 'zh-TW' };
+var DRIVE_MARK = 'drive:';     // PAGES 의 chunk 칸이 이 글자로 시작하면 화면은 드라이브 파일에 있다 (뒤는 파일 ID). 시트에는 한 줄만 남아 가볍다.
 var CHUNK_MARK = '~wj~';      // 조각 맨 앞에 붙이는 표지 (조각이 = + - ' 로 시작하면 시트가 수식·숫자로 바꿔 버리므로). 읽을 때 떼어 낸다. 표지 없는 옛 조각도 그대로 읽힌다.
 var CHUNK = 40000;            // 화면(HTML)을 시트 칸에 나눠 담는 크기 (칸 한도 50,000자)
 // 부서 코드 → 명단(ROSTER)에 적는 부서 이름. 명단에는 코드(MD)나 이름(상품기획) 어느 쪽을 써도 됩니다.
@@ -616,47 +617,94 @@ function pageInfo_(req) {
 
 function pushPage_(req) {
   checkPushKey_(req.key);
-  var name = validPage_(req.name), html = String(req.html || '').replace(/\r\n?/g, '\n');   // 시트는 \r 을 그대로 두지 않을 수 있어 \n 으로 통일 (HTML 모양에는 영향 없음)
+  var name = validPage_(req.name), html = String(req.html || '').replace(/\r\n?/g, '\n');   // 줄바꿈 통일 (HTML 모양에는 영향 없음)
   if (html.length < 1000) throw new Error('화면 내용이 비어 있습니다.');
   var status = req.status === 'draft' ? 'draft' : 'final', asof = String(req.asof || '').slice(0, 40), pid = String(req.pid || '').slice(0, 40);
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
   try {
-    var sh = sh_(TAB.PAGES), n = sh.getLastRow();
-    if (n >= 2) {                                        // 같은 이름의 옛 조각을 지운다 (아래에서 위로)
-      var names = sh.getRange(2, 1, n - 1, 1).getValues(), hit = [];
-      for (var i = 0; i < names.length; i++) if (names[i][0] === name) hit.push(i + 2);
-      for (var h = hit.length - 1; h >= 0;) {                          // 이어진 줄은 한 번에 지운다 (한 줄씩 지우면 느려서 응답이 끊길 수 있다)
-        var e = h;
-        while (e > 0 && hit[e - 1] === hit[e] - 1) e--;
-        sh.deleteRows(hit[e], h - e + 1);
-        h = e - 1;
-      }
-    }
-    var rows = [], now = new Date();
-    for (var p = 0, seq = 0; p < html.length; seq++) {
-      var end = Math.min(p + CHUNK, html.length);
-      var cc = html.charCodeAt(end - 1);
-      if (end < html.length && cc >= 0xD800 && cc <= 0xDBFF) end--;   // 서로게이트 쌍(이모지 등)이 반으로 쪼개지지 않게
-      rows.push([name, seq, CHUNK_MARK + html.substring(p, end), status, asof, now, html.length, pid]);   // 7번째 칸 = 화면 전체 글자 수 (읽을 때 조각이 빠지지 않았는지 확인), 8번째 = 반영 번호
-      p = end;
-    }
-    var start = sh.getLastRow() + 1;
-    sh.getRange(start, 3, rows.length, 1).setNumberFormat('@');         // 조각 칸을 텍스트로 먼저 지정: 첫 글자가 = + - ' 여도 수식·숫자로 바뀌지 않는다
-    sh.getRange(start, 1, rows.length, 8).setValues(rows);
-    SpreadsheetApp.flush();
-    var back = sh.getRange(start, 3, rows.length, 1).getValues();       // 조각마다 원본과 한 글자씩 대조 → 어디가 어떻게 바뀌었는지 에러 메시지로 알려 준다
-    for (var b = 0; b < rows.length; b++) {
-      var got = String(back[b][0]);
-      if (got !== rows[b][2]) throw new Error(diffInfo_(name, b, rows[b][2], got));
-    }
-    var chk = readPageOnce_(name);                                       // 쓴 직후 읽어서 검증 (손상되면 반영 프로그램이 바로 알 수 있게 에러로 돌려준다)
-    if (!chk.ok) throw new Error('시트에 저장된 화면이 손상되었습니다. 다시 반영해 주세요.');
-    audit_('pipeline', 'push_page', name, '', rows.length, status + ' ' + asof);
+    storePage_(name, html, status, asof, pid);
+    audit_('pipeline', 'push_page', name, '', 1, status + ' ' + asof);
   } finally {
     lock.releaseLock();
   }
-  return { ok: true, chunks: Math.ceil(html.length / CHUNK), status: status };
+  return { ok: true, chunks: 1, status: status };
+}
+
+/* ---------- 화면 저장소: 드라이브 파일 (2026-10-08) ----------
+   시트 칸(4만 자 조각)에 화면을 담으니 파일이 1,000만 자 넘게 무거워져 로그인까지 느려지고(11초), 조각이 = 로 시작하면 #ERROR! 로 깨졌다.
+   이제 화면은 드라이브 폴더(WJ_PAGES)에 파일 하나로 두고, PAGES 탭에는 이름·상태·파일 ID 한 줄만 둔다. */
+function pageFolder_() {
+  var props = PropertiesService.getScriptProperties(), id = props.getProperty('PAGES_FOLDER');
+  if (id) { try { return DriveApp.getFolderById(id); } catch (e) { /* 지워졌으면 새로 만든다 */ } }
+  var f = DriveApp.createFolder('WJ_PAGES');
+  props.setProperty('PAGES_FOLDER', f.getId());
+  return f;
+}
+
+function readPageFile_(fid) {
+  return DriveApp.getFileById(fid).getBlob().getDataAsString('UTF-8');
+}
+
+/** 화면을 드라이브 파일에 쓰고, 읽어서 원본과 같은지 확인한 뒤, PAGES 의 그 이름 줄을 한 줄(파일 ID)로 바꾼다. 잠금 안에서 부른다. */
+function storePage_(name, html, status, asof, pid) {
+  var folder = pageFolder_(), it = folder.getFilesByName(name), file = it.hasNext() ? it.next() : null;
+  if (file) file.setContent(html); else file = folder.createFile(name, html, MimeType.PLAIN_TEXT);
+  var fid = file.getId(), back = '';
+  for (var t = 0; t < 3; t++) {                                        // 쓴 직후 읽어서 대조 (드라이브 반영이 아주 잠깐 늦을 수 있어 몇 번 확인)
+    back = readPageFile_(fid);
+    if (back === html) break;
+    Utilities.sleep(1000);
+  }
+  if (back !== html) throw new Error(diffInfo_(name, 0, html, back));
+  var sh = sh_(TAB.PAGES);
+  deletePageRows_(sh, name);
+  sh.appendRow([name, 0, DRIVE_MARK + fid, status, asof, new Date(), html.length, pid]);
+}
+
+/** PAGES 탭에서 그 이름의 줄을 모두 지운다 (이어진 줄은 한 번에) */
+function deletePageRows_(sh, name) {
+  var n = sh.getLastRow();
+  if (n < 2) return;
+  var names = sh.getRange(2, 1, n - 1, 1).getValues(), hit = [];
+  for (var i = 0; i < names.length; i++) if (names[i][0] === name) hit.push(i + 2);
+  for (var h = hit.length - 1; h >= 0;) {
+    var e = h;
+    while (e > 0 && hit[e - 1] === hit[e] - 1) e--;
+    sh.deleteRows(hit[e], h - e + 1);
+    h = e - 1;
+  }
+}
+
+/** [편집기에서 한 번 실행] 시트 조각으로 남아 있는 옛 화면(지난 주 보관본 등)을 드라이브로 옮겨 시트를 가볍게 한다.
+    처음 실행할 때 드라이브 권한을 묻는다. 시간이 모자라면 멈추니, '남음'이 0 이 될 때까지 다시 실행하면 된다. */
+function migratePagesToDrive() {
+  var sh = sh_(TAB.PAGES), n = sh.getLastRow(), order = [], seen = {}, bad = [], done = 0, t0 = Date.now();
+  if (n >= 2) {
+    sh.getRange(2, 1, n - 1, 3).getValues().forEach(function (r) {
+      var nm = String(r[0]);
+      if (nm && !seen[nm] && String(r[2]).indexOf(DRIVE_MARK) !== 0) { seen[nm] = true; order.push(nm); }
+    });
+  }
+  for (var i = 0; i < order.length && Date.now() - t0 < 270000; i++) {
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    try {
+      var idx = pageRows_(order[i]);
+      if (!idx.length) continue;
+      var meta = sh.getRange(idx[0], 1, 1, 8).getValues()[0], pg = readPageOnce_(order[i]);
+      if (!pg.ok) { bad.push(order[i]); continue; }
+      storePage_(order[i], pg.html, meta[3], meta[4], String(meta[7] || ''));
+      done++;
+    } finally {
+      lock.releaseLock();
+    }
+  }
+  var left = order.length - done - bad.length;
+  var msg = '드라이브로 옮김 ' + done + '개 / 남음 ' + left + '개' + (left ? ' (다시 실행하세요)' : '')
+    + (bad.length ? ' / 손상되어 못 옮김(숫자 반영을 다시 하면 해결): ' + bad.join(', ') : '');
+  Logger.log(msg);
+  return msg;
 }
 
 /** 원본 조각과 시트에서 읽은 조각이 처음 달라지는 위치와 그 주변 글자 (손상 원인 진단용) */
@@ -682,8 +730,10 @@ function pageRows_(name) {
    (2026-10-08 홍콩 SUMMARY 가운데 4만 자가 통째로 빠져 보인 사고: 반영 중 읽기로 조각이 섞인 것으로 추정) */
 function getPage_(user, name) {
   validPage_(name);
-  var lock = LockService.getScriptLock(), last = null;
-  try { lock.waitLock(15000); } catch (e) { throw new Error('화면 데이터가 갱신 중입니다. 잠시 뒤 다시 열어 주세요.'); }   // 잠금 없이 읽으면 반영 중인 조각을 볼 수 있다
+  var last = readPageOnce_(name);                                  // 드라이브 화면은 잠금 없이 바로 읽는다 (사용자끼리 줄 서지 않게)
+  if (last.ok) return last;
+  var lock = LockService.getScriptLock(), locked = true;
+  try { lock.waitLock(15000); } catch (e) { locked = false; }
   try {
     for (var tryN = 0; tryN < 3; tryN++) {
       last = readPageOnce_(name);
@@ -691,7 +741,7 @@ function getPage_(user, name) {
       Utilities.sleep(1200);
     }
   } finally {
-    lock.releaseLock();
+    if (locked) lock.releaseLock();
   }
   throw new Error('화면 데이터가 갱신 중입니다. 잠시 뒤 다시 열어 주세요.');
 }
@@ -699,6 +749,14 @@ function getPage_(user, name) {
 function readPageOnce_(name) {
   var idx = pageRows_(name), sh = sh_(TAB.PAGES), parts = [], status = '', asof = '', total = 0;
   if (!idx.length) throw new Error('아직 이 화면이 준비되지 않았습니다. 숫자 반영이 끝난 뒤 다시 열어 주세요.');
+  if (idx.length === 1) {
+    var one = sh.getRange(idx[0], 1, 1, 7).getValues()[0], ref = String(one[2]);
+    if (ref.indexOf(DRIVE_MARK) === 0) {
+      var h1 = readPageFile_(ref.substring(DRIVE_MARK.length));
+      if (Number(one[6]) && h1.length !== Number(one[6])) return { ok: false };
+      return { ok: true, html: h1, status: one[3], asOf: one[4] };
+    }
+  }
   for (var s = 0; s < idx.length;) {                       // 이어진 행끼리 한 번에 읽는다
     var e = s;
     while (e + 1 < idx.length && idx[e + 1] === idx[e] + 1) e++;
