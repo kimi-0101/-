@@ -609,8 +609,14 @@ function pushPage_(req) {
   try {
     var sh = sh_(TAB.PAGES), n = sh.getLastRow();
     if (n >= 2) {                                        // 같은 이름의 옛 조각을 지운다 (아래에서 위로)
-      var names = sh.getRange(2, 1, n - 1, 1).getValues();
-      for (var i = names.length - 1; i >= 0; i--) if (names[i][0] === name) sh.deleteRow(i + 2);
+      var names = sh.getRange(2, 1, n - 1, 1).getValues(), hit = [];
+      for (var i = 0; i < names.length; i++) if (names[i][0] === name) hit.push(i + 2);
+      for (var h = hit.length - 1; h >= 0;) {                          // 이어진 줄은 한 번에 지운다 (한 줄씩 지우면 느려서 응답이 끊길 수 있다)
+        var e = h;
+        while (e > 0 && hit[e - 1] === hit[e] - 1) e--;
+        sh.deleteRows(hit[e], h - e + 1);
+        h = e - 1;
+      }
     }
     var rows = [], now = new Date();
     for (var p = 0, seq = 0; p < html.length; seq++) {
