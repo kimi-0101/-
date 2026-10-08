@@ -27,6 +27,7 @@ var MAX_HTML = 20000;         // 칸당 최대 글자 수
 var MAX_PHOTO_HTML = 46000;   // 사진 칸(VMD 경쟁사·금주 사진) 최대 글자 수 — 시트 한 칸 한도(5만 자) 안쪽
 var AUTO_TRANSLATE = true;    // 저장하면 나머지 두 언어 칸을 구글 번역으로 채운다 (사람이 쓴 칸은 덮어쓰지 않음)
 var LANG_CODE = { ko: 'ko', en: 'en', zh: 'zh-TW' };
+var CHUNK_MARK = '~wj~';      // 조각 맨 앞에 붙이는 표지 (조각이 = + - ' 로 시작하면 시트가 수식·숫자로 바꿔 버리므로). 읽을 때 떼어 낸다. 표지 없는 옛 조각도 그대로 읽힌다.
 var CHUNK = 40000;            // 화면(HTML)을 시트 칸에 나눠 담는 크기 (칸 한도 50,000자)
 // 부서 코드 → 명단(ROSTER)에 적는 부서 이름. 명단에는 코드(MD)나 이름(상품기획) 어느 쪽을 써도 됩니다.
 var DEPT_KO = { GM: 'GM', MD: '상품기획', SALES: '영업', EC: 'EC', VMD: 'VMD', MKT: '마케팅', TRADE: '물류', HR: 'HR', FIN: '회계/재무', BEP: 'BEP' };
@@ -616,7 +617,7 @@ function pushPage_(req) {
       var end = Math.min(p + CHUNK, html.length);
       var cc = html.charCodeAt(end - 1);
       if (end < html.length && cc >= 0xD800 && cc <= 0xDBFF) end--;   // 서로게이트 쌍(이모지 등)이 반으로 쪼개지지 않게
-      rows.push([name, seq, html.substring(p, end), status, asof, now, html.length]);   // 7번째 칸 = 화면 전체 글자 수 (읽을 때 조각이 빠지지 않았는지 확인)
+      rows.push([name, seq, CHUNK_MARK + html.substring(p, end), status, asof, now, html.length]);   // 7번째 칸 = 화면 전체 글자 수 (읽을 때 조각이 빠지지 않았는지 확인)
       p = end;
     }
     var start = sh.getLastRow() + 1;
@@ -682,7 +683,8 @@ function readPageOnce_(name) {
     while (e + 1 < idx.length && idx[e + 1] === idx[e] + 1) e++;
     var vals = sh.getRange(idx[s], 1, e - s + 1, 7).getValues();
     for (var k = 0; k < vals.length; k++) {
-      parts[Number(vals[k][1])] = String(vals[k][2]);
+      var pc = String(vals[k][2]);
+      parts[Number(vals[k][1])] = pc.indexOf(CHUNK_MARK) === 0 ? pc.substring(CHUNK_MARK.length) : pc;
       status = vals[k][3];
       asof = vals[k][4];
       total = Number(vals[k][6]) || total;
