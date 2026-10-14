@@ -227,7 +227,7 @@ function quad(o){
     g+='<text id="qt'+p.i+'"'+(un?' data-h="1" style="display:none"':'')+' text-anchor="'+an+'" pointer-events="none" paint-order="stroke" stroke="#fff" stroke-width="3.5" stroke-linejoin="round"><tspan x="'+tx+'" y="'+(q.y+11)+'" font-size="12" font-weight="500" fill="#1f2937">'+p.lb+'</tspan></text>'});
   g+='</svg>';
   var heads=o.heads||[o.lh],lst=P.slice().sort(function(a,b){return b.y-a.y}).map(function(p){var cs=p.cols||[{t:p.lt}];return '<div class="qi" data-n="'+encodeURIComponent(p.n)+'" id="ql'+p.i+'" onmouseenter="hlq('+p.i+',1)" onmouseleave="hlq('+p.i+',0)"><span class="no" style="background:'+(p.y>=0?'#4a6fa5':'#c0605b')+'">'+p.i+'</span><span class="nm">'+p.n+(p.cl?'<span class="clt">'+B('폐점','Closed','結束營業')+'</span>':'')+(p.nw?'<span class="wn" data-w="'+encodeURIComponent(p.n)+'">⚠</span>':'')+'</span>'+cs.map(function(c){return '<span class="v '+(c.c||'')+'">'+c.t+'</span>'}).join('')+'</div>'}).join('');
-  return '<div class="qwrap"><div class="box" style="padding:6px">'+g+'</div><div class="qside"><div class="qlist" style="--cols:'+heads.length+'"><div class="qh"><span></span><span>'+(o.ttl||B('매장 (이익 좋은 순)','Store (best profit first)','門市（利潤高到低）'))+'</span>'+heads.map(function(h){return '<span class="v">'+h+'</span>'}).join('')+'</div><div class="qb">'+lst+'</div></div></div></div>'}
+  return '<div class="qwrap"><div class="box" style="padding:6px">'+g+'</div><div class="qside"><div class="qlist" style="--cols:'+heads.length+'"><div class="qh"><span></span><span>'+(o.ttl||B('매장 (이익률 좋은 순)','Store (best margin first)','門市（利潤率高到低）'))+'</span>'+heads.map(function(h){return '<span class="v">'+h+'</span>'}).join('')+'</div><div class="qb">'+lst+'</div></div></div></div>'}
 function hlq(i,on){var c=document.getElementById('qc'+i),l=document.getElementById('ql'+i),t=document.getElementById('qt'+i);if(t&&t.getAttribute('data-h'))t.style.display=on?'':'none';if(t&&t.firstChild){t.firstChild.style.fontWeight=on?'800':'';t.firstChild.style.fill=on?'#000':''}if(c)c.classList.toggle('hl',!!on);if(l)l.classList.toggle('hl',!!on);if(c&&on){c.parentNode.parentNode.appendChild(c.parentNode)}}
 /* ---------- 1-1 ---------- */
 function render11(){
@@ -237,11 +237,12 @@ function render11(){
   var pts=Q.map(function(x){return {n:x.n,cl:isClosed(x.n),x:sc(x.s),y:op(x)/x.s,s:x.s,cols:[{t:fmt(sc(x.s))},{t:sg3(sc(op(x))),c:cl(op(x))},{t:pg3(op(x)/x.s,1),c:cl(op(x))}],lt:fmt(sc(x.s))+' · '+pc(op(x)/x.s,0),tip:Lx('매출','Sales','銷售')+' '+fmt(sc(x.s))+' · '+Lx('영업이익','Op. profit','營業利益')+' '+fmt(sc(op(x)))+' ('+pc(op(x)/x.s)+')'}});
   RANK11={};pts.slice().sort(function(a,b){return b.y-a.y}).forEach(function(p,i){RANK11[p.n]={i:i+1,pos:p.y>=0}});
   var avg=pts.length?pts.reduce(function(t,p){return t+p.x},0)/pts.length:0,prof=pts.filter(function(p){return p.y>=0}).length;
-  var tot=sum(R,'s'),topx=sum(R,ST.o);
+  var tot=sum(R,'s'),topx=sum(R,ST.o),oth=sum(R.filter(nonStore),'s'),nq=pts.length+(OUT.length?' + ':''),
+    incK=oth?' (수출·B2B·직원구매 '+fmt(sc(oth))+' 포함)':'',incE=oth?' (incl. exports/B2B/staff '+fmt(sc(oth))+')':'',incZ=oth?'（含出口／B2B／員購 '+fmt(sc(oth))+'）':'';
   $('s11s').innerHTML=pname()+' · '+u;
-  $('c11').innerHTML=B('총 매출 <b>'+fmt(sc(tot))+'</b> · '+(ST.o==='o1'?'영업이익 I':'영업이익 II')+' <b class="'+cl(topx)+'">'+fmt(sc(topx))+'</b>('+pc(topx/tot)+') · 흑자 매장 <b>'+prof+'</b>개 / 적자 <b>'+(pts.length-prof)+'</b>개 (수출·B2B·직원구매 제외, 4분면 '+pts.length+'개 매장'+(OUT.length?' + 번외 '+OUT.length+'개':'')+')',
-    'Total sales <b>'+fmt(sc(tot))+'</b> · '+(ST.o==='o1'?'Op. profit I':'Op. profit II')+' <b class="'+cl(topx)+'">'+fmt(sc(topx))+'</b> ('+pc(topx/tot)+') · profitable <b>'+prof+'</b> / loss-making <b>'+(pts.length-prof)+'</b> ('+pts.length+' stores excl. exports/B2B/staff)',
-    '總銷售 <b>'+fmt(sc(tot))+'</b> ・ '+(ST.o==='o1'?'營業利益I':'營業利益II')+' <b class="'+cl(topx)+'">'+fmt(sc(topx))+'</b>（'+pc(topx/tot)+'）・ 盈利 <b>'+prof+'</b> / 虧損 <b>'+(pts.length-prof)+'</b>（不含出口／B2B／員購 '+pts.length+' 間）');
+  $('c11').innerHTML=B('총 매출 <b>'+fmt(sc(tot))+'</b>'+incK+' · '+(ST.o==='o1'?'영업이익 I':'영업이익 II')+' <b class="'+cl(topx)+'">'+fmt(sc(topx))+'</b>('+pc(topx/tot)+') · 4분면 매장 '+pts.length+'개'+(OUT.length?' + 번외 '+OUT.length+'개':'')+': 흑자 <b>'+prof+'</b>개 / 적자 <b>'+(pts.length-prof)+'</b>개',
+    'Total sales <b>'+fmt(sc(tot))+'</b>'+incE+' · '+(ST.o==='o1'?'Op. profit I':'Op. profit II')+' <b class="'+cl(topx)+'">'+fmt(sc(topx))+'</b> ('+pc(topx/tot)+') · '+pts.length+' stores in the quadrant'+(OUT.length?' + '+OUT.length+' outlier(s)':'')+': profitable <b>'+prof+'</b> / loss-making <b>'+(pts.length-prof)+'</b>',
+    '總銷售 <b>'+fmt(sc(tot))+'</b>'+incZ+' ・ '+(ST.o==='o1'?'營業利益I':'營業利益II')+' <b class="'+cl(topx)+'">'+fmt(sc(topx))+'</b>（'+pc(topx/tot)+'）・ 四象限門市 '+pts.length+' 間'+(OUT.length?' + 番外 '+OUT.length+' 間':'')+'：盈利 <b>'+prof+'</b> / 虧損 <b>'+(pts.length-prof)+'</b>');
   $('c11').innerHTML+=ins11(Q);
   if(ST.v11==='q'){
     $('s11').innerHTML='<div class="box">'+quad({pts:pts,vx:avg,vxdash:1,ylog:1,xpos:1,heads:[B('매출','Sales','銷售'),B('이익','Profit','利潤'),B('이익율','Margin','利潤率')],lh:'',vlab:Lx('평균 매출 ','Avg sales ','平均銷售 ')+fmt(avg),xl:Lx('매출 ('+(ST.c==='KRW'?'백만원':('천 '+CUR))+')','Sales ('+(ST.c==='KRW'?'KRW M':(CUR+' K'))+')','銷售（'+(ST.c==='KRW'?'百萬韓元':('千'+CUR))+'）'),yl:Lx('영업이익률','Operating margin','營業利益率')+' ('+(ST.o==='o1'?'I':'II')+')',
@@ -287,7 +288,8 @@ function render12(){
   var fy=sum(rows26(),'s'),fl=sum(rows25(),'s'),cm=ST.cm==='common',opn=ST.o==='o1'?['영업이익 I','Op. profit I','營業利益I']:['영업이익 II','Op. profit II','營業利益II'],
     gtxt='<b class="'+cl(ts26-ts25)+'">'+pc(ts25?ts26/ts25-1:null)+'</b>('+fmt(sc(ts25))+' → '+fmt(sc(ts26))+')',
     otxt='<b class="'+cl(o26-o25)+'">'+sg3(sc(o26-o25))+'</b>('+fmt(sc(o25))+' → '+fmt(sc(o26))+')',
-    full=B('누계 매출 <b>'+fmt(sc(fy))+'</b> (전년 '+fmt(sc(fl))+', 전체 매장·기간 그대로)','Cumulative sales <b>'+fmt(sc(fy))+'</b> (last year '+fmt(sc(fl))+', all stores and months as is)','累計銷售 <b>'+fmt(sc(fy))+'</b>（去年 '+fmt(sc(fl))+'，全部門市與月份）');
+    mo1=ST.p==='m',
+    full=B((mo1?ST.mo+'월 매출':'1~'+ST.mo+'월 누계 매출')+' <b>'+fmt(sc(fy))+'</b> (전년 '+fmt(sc(fl))+', 전체 매장·기간 그대로)',(mo1?'Month '+ST.mo+' sales':'Jan–month '+ST.mo+' YTD sales')+' <b>'+fmt(sc(fy))+'</b> (last year '+fmt(sc(fl))+', all stores and months as is)',(mo1?ST.mo+'月銷售':'1～'+ST.mo+'月累計銷售')+' <b>'+fmt(sc(fy))+'</b>（去年 '+fmt(sc(fl))+'，全部門市與月份）');
   $('c12').innerHTML=full+' · '+B((cm?'동일 영업월 기준 ':'')+'매출 성장 '+gtxt+' · '+opn[0]+' '+otxt+' · 비교 가능 매장 '+pts.length+'개',
     (cm?'Same-month basis: ':'')+'sales growth '+gtxt+' · '+opn[1]+' '+otxt+' · '+pts.length+' comparable stores',
     (cm?'相同營業月基準：':'')+'銷售成長 '+gtxt+' ・ '+opn[2]+' '+otxt+' ・ 可比較門市 '+pts.length+' 間');
