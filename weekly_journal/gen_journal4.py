@@ -1727,7 +1727,7 @@ def _closed(n):
     return n.endswith(' (폐점)')
 
 
-BRAND_JS = '(function(){\nvar bar=document.getElementById(\'brand\');if(!bar)return;\nvar tables=document.querySelectorAll(\'table.xl\');var t1=tables[0],t2=tables[1];\nfunction mark(b){document.body.setAttribute(\'data-brand\',b);[].forEach.call(bar.querySelectorAll(\'button\'),function(x){x.classList.toggle(\'on\',x.getAttribute(\'data-b\')===b);});try{localStorage.setItem(\'wj_brand\',b);}catch(e){}}\nif(!t2){bar.addEventListener(\'click\',function(ev){var x=ev.target.closest(\'button\');if(x)mark(x.getAttribute(\'data-b\'));});var s0=\'ALL\';try{s0=localStorage.getItem(\'wj_brand\')||\'ALL\';}catch(e){}if(s0!==\'NG\'&&s0!==\'MG\')s0=\'ALL\';mark(s0);return;}\nfunction cells(tr){return [].filter.call(tr.cells,function(c){return c.hasAttribute(\'data-w\');});}\nfunction save(tr){cells(tr).forEach(function(c){if(!c.hasAttribute(\'data-o-t\')){c.setAttribute(\'data-o-t\',c.textContent);if(c.hasAttribute(\'data-loc\'))c.setAttribute(\'data-o-loc\',c.getAttribute(\'data-loc\'));}});}\nfunction restore(tr){cells(tr).forEach(function(c){if(c.hasAttribute(\'data-o-loc\'))c.setAttribute(\'data-loc\',c.getAttribute(\'data-o-loc\'));c.textContent=c.getAttribute(\'data-o-t\');});}\nfunction halves(cs){var blocks=[],cur=null,w=null;cs.forEach(function(c){var k=c.getAttribute(\'data-w\');if(k!==w){w=k;cur=[];blocks.push(cur);}cur.push(c);});var hs=[];blocks.forEach(function(blk){for(var i=0;i<blk.length;i+=5)hs.push(blk.slice(i,i+5));});return hs;}\nfunction fillSum(tr,rows){\n  var tc=halves(cells(tr)),rc=rows.map(function(r){return halves(cells(r));});\n  tc.forEach(function(h,hi){\n    var s=[0,0,0,0];\n    [0,1,3].forEach(function(j){var sum=0;rc.forEach(function(r){var c=r[hi]&&r[hi][j];if(c&&c.hasAttribute(\'data-loc\'))sum+=parseFloat(c.getAttribute(\'data-loc\'))||0;});h[j].setAttribute(\'data-loc\',String(sum));s[j]=sum;});\n    var ach=s[0]?s[1]/s[0]*100:null,yoy=s[3]?(s[1]/s[3]-1)*100:null;\n    h[2].textContent=ach===null?\'\\u2014\':ach.toFixed(1)+\'%\';\n    h[4].textContent=yoy===null?\'\\u2014\':(yoy>=0?\'+\':\'\')+yoy.toFixed(1)+\'%\';\n  });\n}\nfunction apply(b){\n  [].forEach.call(t2.querySelectorAll(\'tr\'),save);\n  var tt=t1&&t1.querySelector(\'tr.tt\');if(tt)save(tt);\n  t2.querySelectorAll(\'tr.st\').forEach(function(r){r.classList.toggle(\'bh\',b!==\'ALL\'&&r.getAttribute(\'data-brand\')!==b);});\n  t2.querySelectorAll(\'tr.oth\').forEach(function(r){r.classList.toggle(\'bh\',r.getAttribute(\'data-bv\')!==b);});\n  t2.querySelectorAll(\'tr.grp.tgl\').forEach(function(g){\n    var gi=g.getAttribute(\'data-g\');\n    var kids=[].filter.call(t2.querySelectorAll(\'tr.st[data-gm="\'+gi+\'"]\'),function(r){return !r.classList.contains(\'bh\');});\n    if(b===\'ALL\'){restore(g);g.classList.remove(\'bh\');}\n    else if(!kids.length){g.classList.add(\'bh\');}\n    else{g.classList.remove(\'bh\');fillSum(g,kids);}\n  });\n  var vis=[].filter.call(t2.querySelectorAll(\'tr.grp\'),function(r){return !r.classList.contains(\'bh\');});\n  if(tt){if(b===\'ALL\')restore(tt);else fillSum(tt,vis);}\n  if(window.wjApplyCur)window.wjApplyCur();\n  [].forEach.call(bar.querySelectorAll(\'button\'),function(x){x.classList.toggle(\'on\',x.getAttribute(\'data-b\')===b);});\n  mark(b);\n}\nbar.addEventListener(\'click\',function(ev){var x=ev.target.closest(\'button\');if(x)apply(x.getAttribute(\'data-b\'));});\nvar b0=\'ALL\';try{b0=localStorage.getItem(\'wj_brand\')||\'ALL\';}catch(e){}\nif(b0!==\'NG\'&&b0!==\'MG\')b0=\'ALL\';\napply(b0);\n})();'
+BRAND_JS = '(function(){\nvar bar=document.getElementById(\'brand\');if(!bar)return;\nvar tables=document.querySelectorAll(\'table.xl\');var t1=tables[0],t2=tables[1];\nfunction mark(b){document.body.setAttribute(\'data-brand\',b);[].forEach.call(bar.querySelectorAll(\'button\'),function(x){x.classList.toggle(\'on\',x.getAttribute(\'data-b\')===b);});try{localStorage.setItem(\'wj_brand\',b);}catch(e){}}\nif(!t2){bar.addEventListener(\'click\',function(ev){var x=ev.target.closest(\'button\');if(x)mark(x.getAttribute(\'data-b\'));});var s0=\'ALL\';try{s0=localStorage.getItem(\'wj_brand\')||\'ALL\';}catch(e){}if(s0!==\'NG\'&&s0!==\'MG\')s0=\'ALL\';mark(s0);return;}\nfunction cells(tr){return [].filter.call(tr.cells,function(c){return c.hasAttribute(\'data-w\');});}\nfunction save(tr){cells(tr).forEach(function(c){if(!c.hasAttribute(\'data-o-t\')){c.setAttribute(\'data-o-t\',c.textContent);if(c.hasAttribute(\'data-loc\'))c.setAttribute(\'data-o-loc\',c.getAttribute(\'data-loc\'));}});}\nfunction restore(tr){cells(tr).forEach(function(c){if(c.hasAttribute(\'data-o-loc\'))c.setAttribute(\'data-loc\',c.getAttribute(\'data-o-loc\'));c.textContent=c.getAttribute(\'data-o-t\');});}\nfunction halves(cs){var blocks=[],cur=null,w=null;cs.forEach(function(c){var k=c.getAttribute(\'data-w\');if(k!==w){w=k;cur=[];blocks.push(cur);}cur.push(c);});var hs=[];blocks.forEach(function(blk){for(var i=0;i<blk.length;i+=5)hs.push(blk.slice(i,i+5));});return hs;}\nfunction fillSum(tr,rows){\n  var tc=halves(cells(tr)),rc=rows.map(function(r){return halves(cells(r));});\n  tc.forEach(function(h,hi){\n    var s=[0,0,0,0];\n    [0,1,3].forEach(function(j){var sum=0;rc.forEach(function(r){var c=r[hi]&&r[hi][j];if(c&&c.hasAttribute(\'data-loc\'))sum+=parseFloat(c.getAttribute(\'data-loc\'))||0;});h[j].setAttribute(\'data-loc\',String(sum));s[j]=sum;});\n    var ach=s[0]?s[1]/s[0]*100:null,yoy=s[3]?(s[1]/s[3]-1)*100:null;\n    h[2].textContent=ach===null?\'\\u2014\':ach.toFixed(1)+\'%\';\n    h[4].textContent=yoy===null?\'\\u2014\':(yoy>=0?\'+\':\'\')+yoy.toFixed(1)+\'%\';\n  });\n}\nfunction apply(b){\n  [].forEach.call(t2.querySelectorAll(\'tr\'),save);\n  var tt=t1&&t1.querySelector(\'tr.tt\');if(tt)save(tt);\n  t2.querySelectorAll(\'tr.st\').forEach(function(r){r.classList.toggle(\'bh\',b!==\'ALL\'&&r.getAttribute(\'data-brand\')!==b);});\n  t2.querySelectorAll(\'tr.oth\').forEach(function(r){r.classList.toggle(\'bh\',r.getAttribute(\'data-bv\')!==b);});\n  t2.querySelectorAll(\'tr.grp.tgl\').forEach(function(g){\n    var gi=g.getAttribute(\'data-g\');\n    var kids=[].filter.call(t2.querySelectorAll(\'tr.st[data-gm="\'+gi+\'"]\'),function(r){return !r.classList.contains(\'bh\');});\n    if(b===\'ALL\'){restore(g);g.classList.remove(\'bh\');}\n    else if(!kids.length){g.classList.add(\'bh\');}\n    else{g.classList.remove(\'bh\');fillSum(g,kids);}\n  });\n  var vis=[].filter.call(t2.querySelectorAll(\'tr.grp\'),function(r){return !r.classList.contains(\'bh\');});\n  if(tt){if(b===\'ALL\')restore(tt);else fillSum(tt,vis);}\n  if(window.wjAnnual)window.wjAnnual(b);\n  if(window.wjApplyCur)window.wjApplyCur();\n  [].forEach.call(bar.querySelectorAll(\'button\'),function(x){x.classList.toggle(\'on\',x.getAttribute(\'data-b\')===b);});\n  mark(b);\n}\nbar.addEventListener(\'click\',function(ev){var x=ev.target.closest(\'button\');if(x)apply(x.getAttribute(\'data-b\'));});\nvar b0=\'ALL\';try{b0=localStorage.getItem(\'wj_brand\')||\'ALL\';}catch(e){}\nif(b0!==\'NG\'&&b0!==\'MG\')b0=\'ALL\';\napply(b0);\n})();'
 
 PHOTO_ITEMS = ('vcomp', 'vthis')       # 사진을 올릴 수 있는 항목: 경쟁사 VMD, 금주 VMD (항목마다 최대 4장, 칸 이름 vcomp_p1~p4)
 _PSD = os.path.dirname(os.path.abspath(__file__))
@@ -1763,9 +1763,11 @@ ANN_CSS = ('.ann{border-collapse:collapse;font-size:12px;min-width:560px}.ann th
            '.ann caption{text-align:left;padding:0 0 6px}.ann caption h2{display:inline;font-size:15px;margin:0}.ann caption small{color:#6b7280;margin-left:6px}')
 
 
-def annual_target_block(ent, groups, data):
-    """연간 화면 맨 위: 연간 전체 목표(ERP 월판매목표 원장, 폐점 매장 목표 포함) 대비 지금까지 누계 달성 (2026-10-12 오웬 요청).
-    목표 = fact_target_ledger 의 올해 연간 합, 누계 매출 = 아래 표와 같은 원장 값. 브랜드 선택과 무관하게 전체 기준."""
+ANNUAL_TOP_TABLE = False      # 연간 화면 맨 위 '연간 전체 목표 대비' 표. 2026-10-14 부터 1·2번 표 오른쪽 열로 옮김 (다시 보이려면 True)
+
+
+def annual_targets(ent, groups):
+    """매장별 올해 연간 목표(ERP 월판매목표 원장, 폐점 매장 목표 포함, 백만원 KRW). 화면에 없는 폐점 매장은 '이름 (폐점)', B2B·직원구매 등은 '기타'."""
     import real_data as rd
     import db_wait
     srcs = ['HK', 'MC'] if ent == 'HK' else ['TW']
@@ -1792,6 +1794,13 @@ def annual_target_block(ent, groups, data):
         else:
             k = n0 + ' (폐점)'
         tgt[k] = tgt.get(k, 0.0) + v
+    return tgt
+
+
+def annual_target_block(ent, groups, data):
+    """연간 화면 맨 위: 연간 전체 목표(ERP 월판매목표 원장, 폐점 매장 목표 포함) 대비 지금까지 누계 달성 (2026-10-12 오웬 요청).
+    목표 = fact_target_ledger 의 올해 연간 합, 누계 매출 = 아래 표와 같은 원장 값. 브랜드 선택과 무관하게 전체 기준."""
+    tgt = annual_targets(ent, groups)
     d = data[-1]
     tot_t = sum(tgt.values())
     tot_a = sums(list(d.values()))[4]
@@ -1825,6 +1834,46 @@ def annual_target_block(ent, groups, data):
     return f'<style>{ANN_CSS}</style><table class="ann">{cap}{head}{body}</table>'
 
 
+ANN_COL_CSS = ('.xl th.an{background:#dbe4f5;color:#111;font-weight:700}.xl th.an.sa{background:#e8eefa;font-size:11px;font-weight:600}'
+               '.xl .astart{border-left:3px solid #6b7280}.xl td.an.rm{color:#6b7280}.xl tr.tt td.an,.xl tr.grp td.an{font-weight:700}')
+
+
+def acells(t, a):
+    """연간 목표 대비 3칸 (연간 목표 · 연간 달성률 · 남은 목표). 브랜드 필터·통화 전환이 다시 계산할 수 있게 data-at(목표)·data-loc(현지통화) 를 단다.
+    data-w 가 없으므로 기간 표시·브랜드 합계 스크립트는 이 칸을 건드리지 않는다."""
+    at = f'{(t or 0) * 1000 / CUR_FX:.4f}'
+    if not t or t < 0.5:                                  # 목표가 없는 줄(기타 등)은 % 대신 —
+        return (f'<td class="n an at astart" data-at="0" data-loc="0">0</td><td class="c an ach">&mdash;</td>'
+                f'<td class="n an rm" data-loc="0">0</td>')
+    rem = max(t - a, 0.0)
+    return (f'<td class="n an at astart" data-at="{at}" data-loc="{at}">{fmt(t)}</td><td class="c an ach">{a / t * 100:.1f}%</td>'
+            f'<td class="n an rm" data-loc="{rem * 1000 / CUR_FX:.4f}">{fmt(rem)}</td>')
+
+
+# 브랜드(NG/MG)를 고르면 아래 표의 누계 매출이 다시 계산되므로, 연간 3칸도 보이는 매장의 목표 합으로 다시 계산한다
+ANN_JS = """(function(){
+var ts=document.querySelectorAll('table.xl');if(ts.length<2)return;var t1=ts[0],t2=ts[1],K=__K__;
+function at(tr){var c=tr.querySelector('td.an.at');return c?parseFloat(c.getAttribute('data-at'))||0:0;}
+function ytd(tr){var c=[].filter.call(tr.cells,function(x){return x.hasAttribute('data-w');});return c[1]?parseFloat(c[1].getAttribute('data-loc'))||0:0;}
+function put(tr,t){var c=tr.querySelectorAll('td.an');if(c.length<3)return;var a=ytd(tr);
+  c[0].setAttribute('data-loc',String(t));c[0].textContent=Math.round(t).toLocaleString();
+  c[1].textContent=t>=K?(a/t*100).toFixed(1)+'%':'\u2014';
+  var r=t>=K?Math.max(t-a,0):0;c[2].setAttribute('data-loc',String(r));c[2].textContent=Math.round(r).toLocaleString();}
+function vis(r){return !r.classList.contains('bh');}
+window.wjAnnual=function(b){
+  var all=b==='ALL',tot=0;
+  t2.querySelectorAll('tr.st').forEach(function(r){put(r,at(r));});
+  t2.querySelectorAll('tr.grp').forEach(function(g){
+    var t=at(g);
+    if(!all&&g.classList.contains('tgl')){t=0;[].forEach.call(t2.querySelectorAll('tr.st[data-gm="'+g.getAttribute('data-g')+'"]'),function(r){if(vis(r))t+=at(r);});}
+    if(!all&&g.classList.contains('oth'))t=0;
+    put(g,t);if(vis(g))tot+=t;
+  });
+  var tt=t1.querySelector('tr.tt');if(tt)put(tt,all?at(tt):tot);
+};
+})();"""
+
+
 def build(ent, groups, weeks_meta, texts, submits, real=None, monthly=None):
     global CUR_FX
     CUR_FX = 185.0 if ent == 'HK' else 46.0
@@ -1850,7 +1899,11 @@ def build(ent, groups, weeks_meta, texts, submits, real=None, monthly=None):
     ncol = 1 + CPW * n
     ORDER = list(range(n))                # 화면 순서: 오래된 주 → 최신 주
     colg = '<colgroup><col style="width:150px">' + ''.join(
-        ''.join(f'<col data-w="{i}" style="width:54px">' for _ in range(CPW)) for i in ORDER) + '</colgroup>'
+        ''.join(f'<col data-w="{i}" style="width:54px">' for _ in range(CPW)) for i in ORDER) + ('<col style="width:70px">' * 3 if yr else '') + '</colgroup>'
+    if yr:
+        ATG = annual_targets(ent, groups)                        # 매장별 연간 목표
+        _ad = data[-1]                                           # 연간 화면은 기간이 하나 (1/1~기준일 누계)
+        _ag_used = sum(ATG.get(r[0], 0.0) for gname, rows in groups if gname != '기타' for r in rows)
 
     def full_head():
         h1 = '<tr><th class="lb" rowspan="3">' + L('구분') + '</th>'
@@ -1866,6 +1919,11 @@ def build(ent, groups, weeks_meta, texts, submits, real=None, monthly=None):
                 for j, nm in enumerate(['목표', '매출', '달성률', '전년', '전년비']):
                     cls = ('sy' if half else 'sw') + (' ystart' if (half and j == 0) else '') + (' wstart' if (not half and j == 0) else '') + (' ach' if j == 2 else '') + (' gr' if j == 4 else '')
                     h3 += f'<th data-w="{i}" class="{cls}">{L(nm)}</th>'
+        if yr:                                                   # 연간 목표 대비 3열 (ERP 월판매목표 연간 합)
+            h1 += f'<th class="wk an astart" colspan="3" rowspan="2">{B("연간 목표 대비", "vs full-year target", "全年目標達成")}</th>'
+            h3 += (f'<th class="an sa astart">{B("연간 목표", "Annual target", "全年目標")}</th>'
+                   f'<th class="an sa ach">{B("연간 달성률", "% of annual", "全年達成率")}</th>'
+                   f'<th class="an sa">{B("남은 목표", "Remaining", "剩餘目標")}</th>')
         return h1 + '</tr>' + h2 + '</tr>' + h3 + '</tr>'
 
     def slim_head():
@@ -1876,9 +1934,11 @@ def build(ent, groups, weeks_meta, texts, submits, real=None, monthly=None):
         return h + '</tr>'
 
     # 1. 이번주 실적
-    t1 = f'<table class="xl"><caption><h2>{L("1. 연간 실적") if yr else (L("1. 이번달 실적") if mon else L("1. 이번주 실적"))} <small>{L("실제 ERP 값 (최신 주 기준)")} &middot; <span class="unitcap"><span class="ko">단위 백만원(KRW)</span><span class="en">Unit: KRW million</span><span class="zh">單位：百萬韓元(KRW)</span></span></small></h2></caption>{colg}{full_head()}<tr class="tt"><td class="lb">Total</td>'
+    t1 = f'<table class="xl{" ya" if yr else ""}"><caption><h2>{L("1. 연간 실적") if yr else (L("1. 이번달 실적") if mon else L("1. 이번주 실적"))} <small>{L("실제 ERP 값 (최신 주 기준)")} &middot; <span class="unitcap"><span class="ko">단위 백만원(KRW)</span><span class="en">Unit: KRW million</span><span class="zh">單位：百萬韓元(KRW)</span></span></small></h2></caption>{colg}{full_head()}<tr class="tt"><td class="lb">Total</td>'
     for i, w in [(k_, data[k_]) for k_ in ORDER]:
         t1 += wcells(sums(list(w.values())), i, HALVES)
+    if yr:
+        t1 += acells(sum(ATG.values()), sums(list(_ad.values()))[4])
     t1 += '</tr></table>'
 
     # 2. 유통별 실적
@@ -1889,17 +1949,24 @@ def build(ent, groups, weeks_meta, texts, submits, real=None, monthly=None):
             body += f'<tr class="grp oth" data-bv="ALL"><td class="lb">{_olab}</td>'
             for i, w in [(k_, data[k_]) for k_ in ORDER]:
                 body += wcells(w[rows[0][0]], i, HALVES)
+            if yr:                                               # 기타 목표 = 전체 목표 - 유통별 매장 목표 합 (B2B·직원구매, 화면에 없는 폐점 매장)
+                _ot = sum(ATG.values()) - _ag_used
+                body += acells(0.0 if abs(_ot) < 0.5 else _ot, _ad[rows[0][0]][4])
             body += '</tr>'
             if all(getattr(data[k_], 'other_by_brand', None) for k_ in ORDER):          # 브랜드별 기타 (필터용, 처음엔 숨김)
                 for _b in ('NG', 'MG'):
                     body += f'<tr class="grp oth bh" data-bv="{_b}"><td class="lb">{_olab}</td>'
                     for i, w in [(k_, data[k_]) for k_ in ORDER]:
                         body += wcells(w.other_by_brand[_b], i, HALVES)
+                    if yr:
+                        body += acells(0.0, 0.0)
                     body += '</tr>'
             continue
         body += f'<tr class="grp tgl" data-g="{gi}"><td class="lb"><span class="car">&#9662;</span>{L(gname)}</td>'
         for i, w in [(k_, data[k_]) for k_ in ORDER]:
             body += wcells(sums([w[r[0]] for r in rows]), i, HALVES)
+        if yr:
+            body += acells(sum(ATG.get(r[0], 0.0) for r in rows), sums([_ad[r[0]] for r in rows])[4])
         body += '</tr>'
         for r in rows:
             _cl = _closed(r[0])
@@ -1910,8 +1977,10 @@ def build(ent, groups, weeks_meta, texts, submits, real=None, monthly=None):
             body += f'<tr class="st{" cl" if _cl else ""}" data-gm="{gi}" data-brand="{_rd_brand(r[0])}"><td class="lb">{_lab}</td>'
             for i, w in [(k_, data[k_]) for k_ in ORDER]:
                 body += wcells(w[r[0]], i, HALVES)
+            if yr:
+                body += acells(ATG.get(r[0], 0.0), _ad[r[0]][4])
             body += '</tr>'
-    t2 = f'<table class="xl"><caption><h2>{L("2. 유통별 실적")} <small>{L("실제 ERP 값")}</small><span class="fold"><button type="button" data-t="g" data-f="open">{L("모두 펼치기")}</button><button type="button" data-t="g" data-f="close">{L("모두 접기")}</button></span></h2></caption>{colg}{full_head()}{body}</table>'
+    t2 = f'<table class="xl{" ya" if yr else ""}"><caption><h2>{L("2. 유통별 실적")} <small>{L("실제 ERP 값")}</small><span class="fold"><button type="button" data-t="g" data-f="open">{L("모두 펼치기")}</button><button type="button" data-t="g" data-f="close">{L("모두 접기")}</button></span></h2></caption>{colg}{full_head()}{body}</table>'
 
     # 3. 부서별 일지
     days = ['월', '화', '수', '목', '금', '토', '일']
@@ -2038,11 +2107,11 @@ def build(ent, groups, weeks_meta, texts, submits, real=None, monthly=None):
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{ent} {"연간영업일지" if yr else ("월간영업일지" if mon else "주간영업일지")}</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css">
-<style>{CSS}{EXTRA_CSS}{CSS2}{HDR_CSS}{CHART_CSS}</style></head><body data-lang="ko" class="wj{arch_cls()}">
+<style>{CSS}{EXTRA_CSS}{CSS2}{HDR_CSS}{CHART_CSS}{ANN_COL_CSS if yr else ""}</style></head><body data-lang="ko" class="wj{arch_cls()}">
 {head_block(ent, 'yearly' if yr else ('monthly' if mon else 'journal'), 'y' if yr else ('m' if mon else 'w'), tabs, acts=not yr, selkind='yearly' if yr else ('monthly' if mon else 'journal'), opts=opts, brand=True)}
 <div class="ntc">{YR_NOTICE if yr else MON_NOTICE if mon else '<span class="ko">실적 표와 SUMMARY 1~4는 실제 ERP 값(최신 주 기준)입니다. 부서별 일지와 SUMMARY 5~7은 담당자가 작성한 내용입니다. 기온·날씨는 Open-Meteo 실측값(홍콩·타이베이)입니다.</span><span class="en">' + LABELS["NOTICE"] + '</span><span class="zh">' + ZH_LABELS["NOTICE"] + '</span>'}</div>
 <div class="scroll" id="sc">
-{"<div class=\"blk\">" + annual_target_block(ent, groups, data) + "</div>" if yr else ""}
+{"<div class=\"blk\">" + annual_target_block(ent, groups, data) + "</div>" if (yr and ANNUAL_TOP_TABLE) else ""}
 <div class="blk">{t1}</div>
 <div class="blk">{t2}</div>
 {"" if yr else "<div class=\"blk\">" + t3 + "</div>"}
@@ -2054,7 +2123,7 @@ var N={n},RC={RECENT},sc=document.getElementById('sc'),btns=document.querySelect
 function show(k){{
   document.querySelectorAll('[data-w]').forEach(function(e){{var w=e.getAttribute('data-w');e.style.display=(k==='full'||(k==='all'&&(+w>=N-RC))||w===k)?'':'none';}});
   var v=(k==='full')?N:((k==='all')?Math.min(RC,N):1);
-  document.querySelectorAll('table.xl').forEach(function(t){{t.style.width=(150+540*v)+'px';}});
+  document.querySelectorAll('table.xl').forEach(function(t){{t.style.width=(150+540*v+(t.classList.contains('ya')?210:0))+'px';}});
   document.querySelectorAll('[data-span]').forEach(function(e){{e.colSpan=10*v;}});
   btns.forEach(function(b){{b.classList.toggle('on',b.getAttribute('data-k')===k);}});
   sc.scrollLeft=(k==='all'||k==='full')?sc.scrollWidth:0;
@@ -2074,6 +2143,7 @@ setLang(sv);
 <script>{cur_js(ent)}</script>
 <script>{HDR_JS}</script>
 <script>{FOLD_JS}</script>
+{'<script>' + ANN_JS.replace('__K__', f'{0.5 * 1000 / CUR_FX:.4f}') + '</script>' if yr else ''}
 <script>{BRAND_JS}</script>
 <script>{CHART_JS}</script>
 {"" if yr else '<script>' + EDIT_JS.replace('__ENT__', ent).replace('__API__', CFG['api_url']) + '</script>'}
