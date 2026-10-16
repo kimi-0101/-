@@ -12,6 +12,8 @@
        python wj_app.py --browser       (앱 창 대신 기본 브라우저로 열기: 시험용)
 """
 import argparse
+import base64
+import ctypes
 import http.cookies
 import http.server
 import json
@@ -27,7 +29,7 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-APP_VERSION = '0.2.0'
+APP_VERSION = '0.3.0'
 APP_TITLE = '주간영업일지'
 SESSION_HOURS = 24            # 서버의 로그인 유지(1일)와 맞춤
 PAGE_TTL = 3 * 24 * 3600      # 저장해 둔 화면을 이 기간까지는 '먼저 바로' 열어 준다 (숫자는 화면 위의 '데이터 기준'에 표시됨)
@@ -41,6 +43,45 @@ def data_dir():
     d = Path(base) / 'WJApp'
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+class _Blob(ctypes.Structure):
+    _fields_ = [('cbData', ctypes.c_uint32), ('pbData', ctypes.POINTER(ctypes.c_char))]
+
+
+def _dpapi(data, protect):
+    """윈도우 자격 증명 보호(DPAPI): 이 PC의 이 사용자 계정으로만 풀 수 있게 암호화/복호화. 윈도우가 아니면 None."""
+    if sys.platform != 'win32':
+        return None
+    try:
+        src = _Blob(len(data), ctypes.cast(ctypes.create_string_buffer(data, len(data)), ctypes.POINTER(ctypes.c_char)))
+        out = _Blob()
+        fn = ctypes.windll.crypt32.CryptProtectData if protect else ctypes.windll.crypt32.CryptUnprotectData
+        if not fn(ctypes.byref(src), None, None, None, None, 0, ctypes.byref(out)):
+            return None
+        try:
+            return ctypes.string_at(out.pbData, out.cbData)
+        finally:
+            ctypes.windll.kernel32.LocalFree(out.pbData)
+    except Exception:
+        return None
+
+
+def seal(text):
+    """로그인 정보를 파일에 쓰기 전에 암호화한다. 암호화할 수 없는 환경이면 평문(시험용)."""
+    raw = text.encode('utf-8')
+    enc = _dpapi(raw, True)
+    if enc is None:
+        return raw
+    return b'DPAPI1' + base64.b64encode(enc)
+
+
+def unseal(blob):
+    """seal() 의 반대. 평문 파일(v0.2 이전)도 읽는다. 풀 수 없으면 None."""
+    if blob.startswith(b'DPAPI1'):
+        raw = _dpapi(base64.b64decode(blob[6:]), False)
+        return None if raw is None else raw.decode('utf-8')
+    return blob.decode('utf-8')
 
 
 class UpstreamError(Exception):
@@ -74,7 +115,7 @@ class State:
     def _load_session(self):
         p = self.root / 'session.json'
         try:
-            s = json.loads(p.read_text(encoding='utf-8'))
+            s = json.loads(unseal(p.read_bytes()))
             if time.time() - s.get('at', 0) < SESSION_HOURS * 3600 and s.get('token'):
                 return s
         except Exception:
@@ -83,7 +124,7 @@ class State:
 
     def set_session(self, token, me, who):
         self.session = dict(token=token, me=me, who=who, at=time.time())
-        (self.root / 'session.json').write_text(json.dumps(self.session, ensure_ascii=False), encoding='utf-8')
+        (self.root / 'session.json').write_bytes(seal(json.dumps(self.session, ensure_ascii=False)))
         try:
             os.chmod(self.root / 'session.json', 0o600)
         except OSError:
