@@ -32,7 +32,7 @@ python wj_app.py               # [앱 모드] 주소창 없는 독립 앱 창으
 python wj_app.py --reset       # 저장된 로그인·화면 지우고 시작
 ```
 
-`.exe` 로 만들기: `.\build_exe.ps1` → `dist\WJApp.exe`
+`.exe` 로 만들기 + 바탕화면·시작 메뉴 아이콘: `.\build_exe.ps1` → `dist\WJApp.exe` (실행 파일은 `%LOCALAPPDATA%\WJApp\WJApp.exe` 로 복사됨)
 
 ## 시험 (개발용)
 
