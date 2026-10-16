@@ -27,11 +27,11 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-APP_VERSION = '0.1.0'
+APP_VERSION = '0.2.0'
 APP_TITLE = '주간영업일지'
 SESSION_HOURS = 24            # 서버의 로그인 유지(1일)와 맞춤
-PAGE_TTL = 30 * 60            # 저장해 둔 화면을 이 시간 동안은 서버에 묻지 않고 그대로 연다
-REFRESH_AFTER = 5 * 60        # 이보다 오래된 화면은 열어 주면서 뒤에서 새로 받아 둔다
+PAGE_TTL = 3 * 24 * 3600      # 저장해 둔 화면을 이 기간까지는 '먼저 바로' 열어 준다 (숫자는 화면 위의 '데이터 기준'에 표시됨)
+REFRESH_AFTER = 5 * 60        # 저장된 지 이보다 오래된 화면은 열어 주면서 뒤에서 새로 받아 둔다
 PAGE_RE = re.compile(r'^(journal|summary|monthly|yearly|msummary|ysummary|bep)_(HK|TW)(@(W|M)\d{1,2})?$')
 PREFETCH = ('journal', 'summary', 'monthly', 'msummary', 'yearly', 'ysummary', 'bep')
 
@@ -47,6 +47,17 @@ class UpstreamError(Exception):
     pass
 
 
+def log(st, msg):
+    """걸린 시간 등을 화면에 찍고 app.log 에도 남긴다 (느릴 때 어디서 걸리는지 보려는 용도)."""
+    line = f"{time.strftime('%H:%M:%S')} {msg}"
+    print(line, flush=True)
+    try:
+        with open(st.root / 'app.log', 'a', encoding='utf-8') as f:
+            f.write(line + '\n')
+    except OSError:
+        pass
+
+
 class State:
     def __init__(self, api_url, root=None):
         self.api_url = api_url.strip()
@@ -56,7 +67,7 @@ class State:
         self.lock = threading.Lock()
         self.session = self._load_session()
         self.page_ttl = PAGE_TTL
-        self.refreshing = set()
+        self.inflight = {}
         self.port = 0
 
     # ---- 로그인 상태 ----
@@ -111,80 +122,97 @@ def upstream(st, body, retries=1, timeout=120):
     data = json.dumps(body).encode('utf-8')
     last = None
     for i in range(retries + 1):
+        t0 = time.time()
         try:
             req = urllib.request.Request(st.api_url, data=data, headers={'Content-Type': 'text/plain;charset=utf-8'})
             with urllib.request.urlopen(req, timeout=timeout) as r:
-                return json.loads(r.read().decode('utf-8'))
+                out = json.loads(r.read().decode('utf-8'))
+            log(st, f"[서버] {body.get('a')} {body.get('name', '')} {time.time() - t0:.1f}초" + (f" (재시도 {i}번째)" if i else ''))
+            return out
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError, OSError) as ex:
             last = ex
+            log(st, f"[서버] {body.get('a')} {body.get('name', '')} 실패 {time.time() - t0:.1f}초: {repr(ex)[:80]}")
             if i < retries:
                 time.sleep(1.5 * (i + 1))
     raise UpstreamError(repr(last)[:200])
 
 
-def fetch_page(st, name):
-    """화면 하나를 가져온다. 서버가 돌려주는 모양({ok, html, ...}) 그대로 반환."""
-    tok = (st.session or {}).get('token', '')
-    if not tok:
+def load_now(st, name):
+    """서버에서 화면을 받아 저장한다. 같은 화면을 동시에 여러 곳에서 부르면 한 번만 받고 나머지는 기다린다."""
+    with st.lock:
+        ev = st.inflight.get(name)
+        owner = ev is None
+        if owner:
+            ev = st.inflight[name] = threading.Event()
+    if not owner:
+        ev.wait(130)
+        c = st.cache_get(name)
+        if c:
+            return {'ok': True, 'html': c['html'], 'status': c['status'], 'asOf': c['asOf'], 'cached': True}
+        return {'ok': False, 'auth': not st.session, 'error': '화면을 받지 못했습니다.'}
+    try:
+        tok = (st.session or {}).get('token', '')
+        r = upstream(st, {'a': 'page', 'name': name, 'token': tok}, retries=2)
+        if r.get('ok'):
+            st.cache_put(name, r)
+        elif r.get('auth'):
+            st.clear_session()
+        return r
+    finally:
+        with st.lock:
+            st.inflight.pop(name, None)
+        ev.set()
+
+
+def fetch_page(st, name, fresh=False):
+    """화면 하나를 가져온다. 서버가 돌려주는 모양({ok, html, ...}) 그대로 반환.
+    저장해 둔 화면이 있으면 서버를 기다리지 않고 바로 내주고, 오래됐으면 뒤에서 새로 받아 둔다."""
+    t0 = time.time()
+    if not (st.session or {}).get('token'):
         return {'ok': False, 'auth': True, 'error': '다시 로그인하세요.'}
     c = st.cache_get(name)
     age = time.time() - c['at'] if c else None
-    if c and age < st.page_ttl:
+    if c and not fresh and age < st.page_ttl:
         if age > REFRESH_AFTER:
             refresh_later(st, name)
+        log(st, f"[화면] {name} 저장본 {time.time() - t0:.2f}초 (저장된 지 {int(age // 60)}분)")
         return {'ok': True, 'html': c['html'], 'status': c['status'], 'asOf': c['asOf'], 'cached': True}
     try:
-        r = upstream(st, {'a': 'page', 'name': name, 'token': tok}, retries=2)
+        r = load_now(st, name)
     except UpstreamError:
         if c:                                         # 인터넷이 안 되면 저장해 둔 화면(조금 오래된 것)이라도 연다
             return {'ok': True, 'html': c['html'], 'status': c['status'], 'asOf': c['asOf'], 'cached': True, 'stale': True}
         return {'ok': False, 'error': '서버에 연결하지 못했습니다.'}
-    if r.get('ok'):
-        st.cache_put(name, r)
-    elif r.get('auth'):
-        st.clear_session()
+    log(st, f"[화면] {name} 서버에서 받음 {time.time() - t0:.1f}초")
     return r
 
 
 def refresh_later(st, name):
-    with st.lock:
-        if name in st.refreshing:
-            return
-        st.refreshing.add(name)
-
     def run():
         try:
-            tok = (st.session or {}).get('token', '')
-            if tok:
-                r = upstream(st, {'a': 'page', 'name': name, 'token': tok}, retries=1)
-                if r.get('ok'):
-                    st.cache_put(name, r)
+            load_now(st, name)
         except Exception:
             pass
-        finally:
-            with st.lock:
-                st.refreshing.discard(name)
     threading.Thread(target=run, daemon=True).start()
 
 
-def prefetch(st):
-    """로그인 직후 뒤에서 자주 여는 화면을 미리 받아 둔다."""
+def prefetch(st, delay=3.0):
+    """뒤에서 자주 여는 화면을 미리 받아 둔다 (첫 화면을 여는 동안은 방해하지 않도록 잠깐 뒤에 시작)."""
     me = (st.session or {}).get('me') or {}
     ents = ['HK', 'TW'] if me.get('ent') in ('ALL', '', None) else [me['ent']]
     first = default_page(st)
 
     def run():
-        names = [first] + [f'{k}_{e}' for e in ents for k in PREFETCH]
-        seen = set()
+        time.sleep(delay)
+        names = [f'{k}_{e}' for e in ents for k in PREFETCH]
         for n in names:
-            if n in seen or not st.session:
+            if n == first or not st.session:
                 continue
-            seen.add(n)
             c = st.cache_get(n)
-            if c and time.time() - c['at'] < st.page_ttl:
+            if c and time.time() - c['at'] < REFRESH_AFTER:
                 continue
             try:
-                fetch_page(st, n)
+                load_now(st, n)
             except Exception:
                 pass
             time.sleep(0.5)
@@ -201,14 +229,22 @@ def js(x):
     return json.dumps(x, ensure_ascii=False).replace('<', '\\u003c')
 
 
-def rewrite(st, html):
-    """화면 안의 서버 주소를 이 앱의 /api 로 바꾸고, 로그인 열쇠 자리표시자를 넣는다 (진짜 열쇠는 화면에 넘기지 않는다)."""
+def rewrite(st, html, name=''):
+    """화면 안의 서버 주소를 이 앱의 /api 로 바꾸고, 로그인 열쇠 자리표시자를 넣는다 (진짜 열쇠는 화면에 넘기지 않는다).
+    오른쪽 아래에 작은 '↻ 최신 데이터 받기' 버튼도 붙인다."""
     h = html.replace(st.api_url, '/api') if st.api_url else html
     s = st.session or {}
     inj = ('<script>try{localStorage.setItem("wj_tok_HK","app");localStorage.setItem("wj_tok_TW","app");'
            'localStorage.setItem("wj_who",%s);localStorage.setItem("wj_role",%s);}catch(e){}</script>'
            % (js(s.get('who', '')), js((s.get('me') or {}).get('role', ''))))
-    return h.replace('<head>', '<head>' + inj, 1) if '<head>' in h else inj + h
+    h = h.replace('<head>', '<head>' + inj, 1) if '<head>' in h else inj + h
+    bar = ('<div id="wjapp" style="position:fixed;right:10px;bottom:8px;z-index:99999;font:11px sans-serif;background:rgba(17,17,17,.82);'
+           'color:#fff;padding:4px 10px;border-radius:12px;opacity:.8">앱 v' + APP_VERSION + ' · <a href="#" id="wjrf" style="color:#9cf;text-decoration:none">↻ 최신 데이터 받기</a></div>'
+           '<script>(function(){var nm=%s,a=document.getElementById("wjrf");if(!a)return;a.onclick=function(e){e.preventDefault();a.textContent="받는 중…";'
+           'fetch("/app/refresh",{method:"POST",body:JSON.stringify({name:nm})}).then(function(){if(window.__wjC)delete window.__wjC[nm];'
+           'if(window.wjGo&&nm){return window.wjGo(nm);}location.reload();}).then(function(){a.textContent="↻ 최신 데이터 받기";});};})();</script>' % js(name))
+    i = h.rfind('</body>')
+    return h[:i] + bar + h[i:] if i >= 0 else h + bar
 
 
 LOGIN_HTML = """<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>주간영업일지</title>
@@ -283,15 +319,20 @@ def make_handler(st):
                         return self._send(302, '', extra={'Location': '/login'})
                     return self._send(503, f'<meta charset="utf-8"><body style="font-family:sans-serif;padding:40px">'
                                            f'<h3>화면을 열 수 없습니다</h3><p>{r.get("error", "")}</p><p><a href="/">다시 시도</a></p>')
-                return self._send(200, rewrite(st, r['html']))
+                return self._send(200, rewrite(st, r['html'], name))
             self._send(404, 'not found')
 
         def do_POST(self):
+            try:
+                n = int(self.headers.get('Content-Length') or 0)
+                raw = self.rfile.read(n)                      # 본문은 항상 먼저 다 읽는다 (안 읽고 응답하면 같은 연결의 다음 요청이 꼬임)
+            except Exception:
+                self.close_connection = True
+                return self._send(400, 'bad request')
             if not self._guard():
                 return
             try:
-                n = int(self.headers.get('Content-Length') or 0)
-                body = json.loads(self.rfile.read(n).decode('utf-8') or '{}')
+                body = json.loads(raw.decode('utf-8') or '{}')
             except Exception:
                 return self._json({'ok': False, 'error': '요청 형식 오류'}, 400)
             path = self.path.split('?')[0]
@@ -305,6 +346,14 @@ def make_handler(st):
                     prefetch(st)
                     return self._json({'ok': True})
                 return self._json({'ok': False, 'error': r.get('error', '로그인 실패')})
+            if path == '/app/refresh':                            # '최신 데이터 받기' 버튼: 그 화면을 서버에서 새로 받아 저장
+                name = str(body.get('name', ''))
+                if not st.session:
+                    return self._json({'ok': False, 'auth': True})
+                if PAGE_RE.match(name):
+                    r = fetch_page(st, name, fresh=True)
+                    return self._json({'ok': bool(r.get('ok')), 'auth': bool(r.get('auth'))})
+                return self._json({'ok': False})
             if path != '/api':
                 return self._json({'ok': False, 'error': 'not found'}, 404)
             a = body.get('a')
@@ -318,7 +367,7 @@ def make_handler(st):
                     return self._json({'ok': False, 'error': '페이지 이름이 올바르지 않습니다.'})
                 r = fetch_page(st, name)
                 if r.get('ok'):
-                    r = dict(r, html=rewrite(st, r['html']))
+                    r = dict(r, html=rewrite(st, r['html'], name))
                 return self._json(r)
             if a == 'logout':
                 try:
@@ -406,6 +455,8 @@ def main(argv=None):
             print(f'이 앱({APP_VERSION})은 너무 오래되었습니다. {need} 이상으로 업데이트하세요.')
             return 3
     start_server(st)
+    if st.session:                                             # 어제 로그인이 아직 유효하면 열기 전에 미리 받아 둔다
+        prefetch(st, delay=1.0)
     start_url = f'http://127.0.0.1:{st.port}/?k={st.key}'
     if a.browser:
         print('열기:', start_url, '(Ctrl+C 로 종료)')

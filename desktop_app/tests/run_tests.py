@@ -14,6 +14,11 @@ class Ctl(http.server.BaseHTTPRequestHandler):
         if k == 'url': out = {'url': mock.url}
         elif k == 'count': out = {'n': mock.count(q['a'][0])}
         elif k == 'lasttoken': out = {'token': [t for a, t in mock.calls if a == q['a'][0]][-1]}
+        elif k == 'pagecount': out = {'n': mock.pagenames.count(q['name'][0])}
+        elif k == 'agecache':
+            import json as _j, time as _t
+            f = st._cpath(q['name'][0]); c = _j.loads(f.read_text(encoding='utf-8')); c['at'] = _t.time() - int(q['sec'][0]); f.write_text(_j.dumps(c, ensure_ascii=False), encoding='utf-8')
+        elif k == 'clearcache': st.cache_clear()
         elif k == 'ttl0': st.page_ttl = 0
         elif k == 'offline': mock.offline = q['v'][0] == '1'
         elif k == 'expire': mock.expire = q['v'][0] == '1'

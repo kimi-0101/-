@@ -17,6 +17,7 @@ window.__save=function(){return fetch(API,{method:'POST',headers:{'Content-Type'
 class Mock:
     def __init__(self):
         self.calls = []          # (action, token)
+        self.pagenames = []      # a:page 로 요청된 화면 이름
         self.offline = False
         self.expire = False
         self.url = ''
@@ -53,6 +54,7 @@ def start(mock):
             if tok != REAL_TOKEN or mock.expire:
                 return self._out(200, json.dumps({'ok': False, 'auth': True, 'error': '다시 로그인하세요.'}))
             if a == 'page':
+                mock.pagenames.append(req['name'])
                 return self._out(200, json.dumps({'ok': True, 'html': mock.page_html(req['name']), 'status': 'final', 'asOf': '2026-10-16 10:00'}))
             if a == 'save':
                 return self._out(200, json.dumps({'ok': True, 'version': 1}))
