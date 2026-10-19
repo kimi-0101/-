@@ -406,11 +406,13 @@ class GeminiCall(unittest.TestCase):
         self.ur, self.ue = urllib.request, urllib.error
         self.real_urlopen = urllib.request.urlopen
         S.GEMINI_RETRY_WAIT = 0
+        S._GEMINI_DOWN['until'] = 0.0
         os.environ['GEMINI_API_KEY'] = 'k'
         self.urls = []
 
     def tearDown(self):
         self.ur.urlopen = self.real_urlopen
+        S._GEMINI_DOWN['until'] = 0.0
         os.environ.pop('GEMINI_API_KEY', None)
 
     def _resp(self, text):
@@ -442,11 +444,25 @@ class GeminiCall(unittest.TestCase):
         S.call_gemini('p')
         self.assertIn('gemini-flash-latest', self.urls[-1])
 
+    def test_gemini_rate_limit_pauses_gemini_for_a_while(self):
+        n = []
+        def fake(req, timeout=0):
+            n.append(1); raise self._http(429)
+        self.ur.urlopen = fake
+        with self.assertRaises(RuntimeError):
+            S.call_gemini('p')
+        first = len(n)
+        with self.assertRaises(RuntimeError) as cm:
+            S.call_gemini('p')
+        self.assertEqual(len(n), first)                                          # 두 번째는 호출 없이 바로 실패
+        self.assertIn('건너뜀', str(cm.exception))
+
     def test_gives_up_with_runtime_error_and_other_http_errors_are_not_retried(self):
         self.ur.urlopen = lambda req, timeout=0: (_ for _ in ()).throw(self._http(429))
         with self.assertRaises(RuntimeError) as cm:
             S.call_gemini('p')
         self.assertIn('429', str(cm.exception))
+        S._GEMINI_DOWN['until'] = 0.0
         n = []
         def fake(req, timeout=0):
             n.append(1); raise self._http(400)
@@ -554,6 +570,36 @@ class Tr(unittest.TestCase):
         ko = {'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['2026년 하반기 바자회 모색, 3분기 점검']}}
         S.call_gemini = lambda p, timeout=120: json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['Explore 2026 H2 bazaar, Q3 review']}})
         self.assertTrue(S.translate_struct(ko, '영어'))
+
+    def test_discount_percent_may_become_zhe_when_arithmetic_is_right(self):
+        ko = {'sec5': {}, 'sec6': {}, 'sec7': {'EC': ['20% 할인 행사 진행']}}
+        def tr(text):
+            return json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'EC': [text]}}, ensure_ascii=False)
+        os.environ['WJ_CLAUDE_FALLBACK'] = '0'
+        try:
+            S.call_gemini = lambda p, timeout=120: tr('舉辦8折優惠活動')
+            self.assertTrue(S.translate_struct(ko, '번체'))                          # 20% 할인 = 8折
+            S.call_gemini = lambda p, timeout=120: tr('舉辦八折優惠活動')
+            self.assertTrue(S.translate_struct(ko, '번체'))                          # 한자 숫자도 인식
+            S.call_gemini = lambda p, timeout=120: tr('舉辦9折優惠活動')
+            self.assertIsNone(S.translate_struct(ko, '번체'))                        # 산수가 틀리면 거부
+            S.call_gemini = lambda p, timeout=120: tr('舉辦優惠活動')
+            self.assertIsNone(S.translate_struct(ko, '번체'))                        # 할인율이 통째로 빠지면 거부
+        finally:
+            os.environ.pop('WJ_CLAUDE_FALLBACK', None)
+        ko15 = {'sec5': {}, 'sec6': {}, 'sec7': {'EC': ['15% 할인']}}
+        S.call_gemini = lambda p, timeout=120: tr('85折')
+        self.assertTrue(S.translate_struct(ko15, '번체'))
+
+    def test_claude_fallback_retries_once_with_the_reason(self):
+        S.call_gemini = lambda p, timeout=120: self.BAD
+        seen = []
+        def claude(p, model=None, **kw):
+            seen.append(p)
+            return self.BAD if len(seen) == 1 else self.OK
+        S.call_claude = claude
+        self.assertTrue(S.translate_struct(self.KO, '영어'))
+        self.assertEqual(len(seen), 2); self.assertIn('이전 번역의 문제', seen[1])
 
     def test_man_unit_and_two_digit_tolerated(self):
         ko = {'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['3,693만 달성, 두 자릿수 성장']}}

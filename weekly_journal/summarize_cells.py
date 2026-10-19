@@ -177,6 +177,8 @@ def _gemini_key():
     return open(p, encoding='utf-8').read().strip() if os.path.exists(p) else ''
 
 
+_GEMINI_DOWN = {'until': 0.0}                                                        # 한도(429)로 끝내 실패하면 이 시각까지 Gemini 를 건너뛴다
+GEMINI_PAUSE = 600                                                                    # 건너뛰는 시간(초)
 _GEMINI_SEM = threading.Semaphore(int(os.environ.get('WJ_MAX_GEMINI', '2')))      # 무료 키는 분당 호출 수 제한이 작아서 동시에 2개까지만
 
 
@@ -188,6 +190,8 @@ def call_gemini(prompt, timeout=120):
     key = _gemini_key()
     if not key:
         raise RuntimeError('gemini 키 없음')
+    if time.time() < _GEMINI_DOWN['until']:
+        raise RuntimeError('gemini HTTP 429 (한도 중이라 잠시 건너뜀)')
     models = [os.environ.get('GEMINI_MODEL', GEMINI_MODEL), 'gemini-flash-latest']
     body = json.dumps({'contents': [{'parts': [{'text': prompt}]}], 'generationConfig': {'temperature': 0, 'responseMimeType': 'application/json'}}).encode('utf-8')
     last = None
@@ -217,6 +221,8 @@ def call_gemini(prompt, timeout=120):
             return res['candidates'][0]['content']['parts'][0]['text']
         except (KeyError, IndexError):
             raise RuntimeError('gemini 응답 없음: ' + json.dumps(res, ensure_ascii=False)[:200])
+    if last and ('429' in last or '503' in last):
+        _GEMINI_DOWN['until'] = time.time() + GEMINI_PAUSE
     raise RuntimeError(last or 'gemini 호출 실패')
 
 
@@ -465,12 +471,24 @@ def translation_checker(ko_struct):
         if re.fullmatch(r'\d{1,2}\.\d{1,2}', n_) or (n_.isdigit() and int(n_) <= 12 and n_ not in pct):
             spelled.add(n_)
 
+    disc = {m for m in re.findall(r'(\d{1,2})\s*%\s*(?:할인|인하|세일|DC)', ko_text) if 5 <= int(m) <= 95}   # '20% 할인' 은 중국어권에서 '8折'(80%만 낸다) 로 쓴다
+
     def problem(out):
-        """번역이 원본과 어긋난 점. 없으면 ''. 숫자는 새로 생기면 안 되고, 월(月) 숫자만 빠져도 된다."""
+        """번역이 원본과 어긋난 점. 없으면 ''. 숫자는 새로 생기면 안 되고, 월(月) 숫자만 빠져도 된다. 할인율은 '折' 표기로 바꿔도 산수가 맞으면 허용."""
         if shape(out) != shape(ko_struct):
             return '구조(키·배열 길이)가 다름'
-        got = nums(re.sub(r'\b[HQ][1-4]\b', ' ', ' '.join(_texts(out))))        # 'H2'(하반기)·'Q3'(3분기) 는 한글의 반기·분기를 옮긴 표기라 숫자로 세지 않는다
-        extra, missing = sorted(got - want - man_ok), sorted(n for n in want - got if n not in months and n not in man_src and n not in spelled)
+        out_text = ' '.join(_texts(out))
+        out_text = re.sub(r'([一二三四五六七八九〇]+)折', lambda g: ''.join(str('〇一二三四五六七八九'.index(c)) for c in g.group(1)) + '折', out_text)   # 八折 → 8折
+        got = nums(re.sub(r'\b[HQ][1-4]\b', ' ', out_text))        # 'H2'(하반기)·'Q3'(3분기) 는 한글의 반기·분기를 옮긴 표기라 숫자로 세지 않는다
+        okmissing, okextra = set(), set()
+        for m in disc:
+            f = (100 - int(m)) / 10
+            forms = {f'{f:g}', str(round(f * 10))}                                         # 20% → 8折 / 15% → 8.5折·85折
+            if any(x + '折' in out_text for x in forms):
+                okmissing.add(m)
+                okextra |= forms
+        extra = sorted(got - want - man_ok - okextra)
+        missing = sorted(n for n in want - got if n not in months and n not in man_src and n not in spelled and n not in okmissing)
         if extra or missing:
             return f'숫자 늘어남 {extra} / 빠짐 {missing}'
         return ''
@@ -512,12 +530,15 @@ def translate_struct(ko_struct, lang_name, model=None):
         return None
     if not key_missing:
         print(f'[알림] Gemini 로 {lang_name} 번역을 못 채워 Claude 로 번역합니다')
-    out = parse_json(call_claude(base_prompt, model=model, label=f'번역({lang_name[:2]})'))               # Gemini 키가 없거나 끝내 못 한 경우에만 Claude 로 번역
-    why = problem(out)
-    if why:
-        print(f'[알림] Claude 번역이 검사에 걸려 버림 — {why}')
-        return None
-    return out
+    prompt = base_prompt
+    for attempt in (1, 2):                                                # Gemini 키가 없거나 끝내 못 한 경우에만 Claude 로 번역(걸리면 이유를 알려 한 번 더)
+        out = parse_json(call_claude(prompt, model=model, label=f'번역({lang_name[:2]})'))
+        why = problem(out)
+        if not why:
+            return out
+        print(f'[알림] Claude 번역이 검사에 걸림({attempt}/2) — {why}')
+        prompt = base_prompt + f'\n\n[이전 번역의 문제] {why}. 숫자와 구조를 원문과 똑같이 맞춰 다시 번역한다.'
+    return None
 
 
 def demo_tw():
