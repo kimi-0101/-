@@ -11,10 +11,12 @@
 번역이 한도·오류로 빠진 채 저장돼도 다음 실행에서 '번역만' 채운다(정리·검증은 다시 부르지 않는다).
 """
 import argparse
+import copy
 import datetime
 import hashlib
 import json
 import os
+import re
 import sys
 
 import sheet_reader as R
@@ -29,6 +31,56 @@ LANGS = (('en', '영어'), ('zh', '번체 중국어(대만·홍콩 업무 용어
 def src_hash(cells, quant):
     raw = json.dumps([[c['sec'], c['dept'], c['item'], c['text']] for c in cells], ensure_ascii=False) + '|' + quant
     return hashlib.sha1(raw.encode('utf-8')).hexdigest()[:16]
+
+
+def _owner(key):
+    """AI 결과의 부서 키 → 원문 칸의 부서 이름.  'GM(HQ 요청)' 은 GM 칸에서 나온 것이므로 'GM'."""
+    return re.split(r'[（(]', str(key or ''))[0].strip()
+
+
+def dept_hashes(cells, quant):
+    """부서마다 원문(섹션·항목·글)과 정량 블록의 해시. 한 부서의 글만 고쳐지면 그 부서 해시만 바뀐다."""
+    by = {}
+    for c in cells:
+        by.setdefault(c['dept'], []).append([c['sec'], c['item'], c['text']])
+    return {d: hashlib.sha1((json.dumps(v, ensure_ascii=False) + '|' + quant).encode('utf-8')).hexdigest()[:12] for d, v in by.items()}
+
+
+def _keys(disp):
+    return {(sec, k) for sec in ('sec5', 'sec6', 'sec7') for k in ((disp or {}).get(sec) or {})}
+
+
+def diff_keys(old_ko, new_ko):
+    """화면용 한글에서 새로 생기거나 내용이 바뀐 (섹션, 부서) 와 사라진 것."""
+    changed = {(s, k) for s, k in _keys(new_ko) if ((old_ko or {}).get(s) or {}).get(k) != new_ko[s][k]}
+    removed = {(s, k) for s, k in _keys(old_ko) if k not in (new_ko.get(s) or {})}
+    return changed, removed
+
+
+def restrict(disp, keys):
+    out = {'sec5': {}, 'sec6': {}, 'sec7': {}}
+    for s, k in keys:
+        if k in (disp.get(s) or {}):
+            out[s][k] = disp[s][k]
+    return out
+
+
+def merge_lang(old_lang, part, ko, changed, removed):
+    """기존 번역에서 바뀐·사라진 줄을 빼고, 새로 번역한 줄을 넣는다. 한글 화면의 모든 줄이 채워지지 않으면 None(그 언어는 비워 두고 다음에 전체를 번역)."""
+    m = copy.deepcopy(old_lang)
+    for s, k in changed | removed:
+        (m.get(s) or {}).pop(k, None)
+    for s in ('sec5', 'sec6', 'sec7'):
+        for k, v in (part.get(s) or {}).items():
+            m.setdefault(s, {})[k] = v
+    for s in ('sec5', 'sec6', 'sec7'):
+        for k in list((m.get(s) or {})):
+            if k not in (ko.get(s) or {}):
+                del m[s][k]
+        for k in (ko.get(s) or {}):
+            if k not in (m.get(s) or {}):
+                return None
+    return m
 
 
 def _norm(t):
@@ -107,38 +159,66 @@ def missing_langs(display):
     return [lg for lg, _ in LANGS if lg not in display]
 
 
-def build_display_i18n(out, flags, warn, cells, quant, have=None, say=print):
-    """화면용(ko) + 번역(en·zh). have 에 이미 있는 언어는 다시 번역하지 않는다. 번역 실패는 그 언어만 비워 두고(한글로 대체 표시) 계속한다."""
+def _translate_many(jobs, say):
+    """jobs: [(언어코드, 언어이름, 번역할 구조)] → {언어코드: 번역 또는 None}. 서로 독립이라 동시에 부른다."""
+    def one(job):
+        lg, name, struct = job
+        tr = None
+        for attempt in (1, 2):                          # 구조가 어긋나 None 이 오는 경우가 있어 한 번 더 시도
+            try:
+                tr = S.translate_struct(struct, name)
+            except Exception as ex:
+                say(f'[경고] {name} 번역 실패({attempt}/2) — {ex!r}')
+                tr = None
+                break                                   # 호출 자체가 실패(한도 등)면 재시도하지 않는다
+            if tr:
+                break
+        return lg, tr
+    if len(jobs) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=len(jobs)) as ex_:
+            return dict(ex_.map(one, jobs))
+    return dict(one(j) for j in jobs)
+
+
+def build_display_i18n(out, flags, warn, cells, quant, have=None, say=print, old_ko=None):
+    """화면용(ko) + 번역(en·zh). have 에 이미 있는 언어는 다시 번역하지 않는다. 번역 실패는 그 언어만 비워 두고(한글로 대체 표시) 계속한다.
+    old_ko(이전 화면용 한글)를 주면 '바뀐 줄만' 번역해서 기존 번역에 합친다."""
     ko, dropped = make_display(out, flags, warn, cells, quant)
     res = {'ko': ko}
-    for lg in (have or {}):
-        if lg != 'ko' and have[lg]:
-            res[lg] = have[lg]
-    if has_content(ko):
-        todo = [(lg, name) for lg, name in LANGS if lg not in res]
-
-        def one(item):
-            lg, name = item
-            tr = None
-            for attempt in (1, 2):                      # 구조가 어긋나 None 이 오는 경우가 있어 한 번 더 시도
-                try:
-                    tr = S.translate_struct(ko, name)
-                except Exception as ex:
-                    say(f'[경고] {name} 번역 실패({attempt}/2) — {ex!r}')
-                    tr = None
-                    break                               # 호출 자체가 실패(한도 등)면 재시도하지 않는다
-                if tr:
-                    break
-            return lg, tr
-        if len(todo) > 1:                               # 영어·중국어는 서로 독립이라 동시에 부른다(시간 절반)
-            from concurrent.futures import ThreadPoolExecutor
-            with ThreadPoolExecutor(max_workers=len(todo)) as ex_:
-                got = list(ex_.map(one, todo))
+    keep = {lg: have[lg] for lg in (have or {}) if lg != 'ko' and have[lg]}
+    if not has_content(ko):
+        res.update(keep)
+        return res, dropped
+    changed = removed = set()
+    partial = old_ko is not None and bool(keep)
+    if partial:
+        changed, removed = diff_keys(old_ko, ko)
+    jobs, merged = [], {}
+    for lg, name in LANGS:
+        if lg in keep and partial:
+            if changed:
+                jobs.append((lg, name, restrict(ko, changed)))       # 바뀐 줄만 번역
+            else:
+                m = merge_lang(keep[lg], {}, ko, changed, removed)   # 번역할 게 없으면 사라진 줄만 정리
+                if m:
+                    merged[lg] = m
+        elif lg in keep:
+            res[lg] = keep[lg]
         else:
-            got = [one(t) for t in todo]
-        for lg, tr in got:
-            if tr:
-                res[lg] = tr
+            jobs.append((lg, name, ko))                              # 아직 없는 언어는 전체 번역
+    got = _translate_many(jobs, say) if jobs else {}
+    for lg, name, struct in jobs:
+        tr = got.get(lg)
+        if not tr:
+            continue
+        if lg in keep and partial:
+            m = merge_lang(keep[lg], tr, ko, changed, removed)
+            if m:
+                merged[lg] = m
+        else:
+            res[lg] = tr
+    res.update(merged)
     return res, dropped
 
 
@@ -151,7 +231,7 @@ def _save(path, d):
 
 
 def build(ent, code, cells=None, force=False, redo_display=False, quant_file=None, say=print):
-    """한 법인·한 코드의 정리본을 만든다. 반환: 'made'(새로 만듦) | 'filled'(번역만 보충) | 'redo'(화면용 다시) | 'skip'(원문 같음) | 'empty'(요약할 글 없음)
+    """한 법인·한 코드의 정리본을 만든다. 반환: 'made'(새로 만듦) | 'updated'(바뀐 부서만 다시 요약) | 'filled'(번역만 보충) | 'redo'(화면용 다시) | 'skip'(원문 같음) | 'empty'(요약할 글 없음)
     호출 자체가 실패하면 예외를 그대로 올린다(호출하는 쪽이 건너뛸지 정한다)."""
     path = os.path.join(DRAFT_DIR, f'{ent}_{code}.json')
     qp = quant_file or os.path.join(QUANT_DIR, f'{ent}_{code}.txt')
@@ -171,31 +251,67 @@ def build(ent, code, cells=None, force=False, redo_display=False, quant_file=Non
     if not cells:
         return 'empty'
     h = src_hash(cells, quant)
-    if old and old.get('hash') == h and old.get('display') and not force:
-        miss = missing_langs(old['display'])
-        if not miss:
-            return 'skip'
-        disp, dropped = build_display_i18n(old['out'], old.get('flags', []), old.get('warn', []), old['cells'], old.get('quant', ''), have=old['display'], say=say)
-        old['display'], old['dropped'] = disp, dropped
-        _save(path, old)
-        left = missing_langs(disp)
-        say(f'번역 보충: {ent} {code} — 채움 {len(miss) - len(left)}개 / 아직 빠짐 {left}')
-        return 'filled'
-
+    cur = dept_hashes(cells, quant)
     name = {'HK': '홍콩', 'TW': '대만'}[ent]
     period = (f'2026년 {int(code[1:])}월' if code[0] == 'M' else f'{code} 주차')
+    now = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+
+    if old and old.get('display') and not force:
+        old_dh = old.get('dept_hash') or dept_hashes([c for c in old.get('cells', []) if len(c['text']) > 3], old.get('quant', ''))     # 예전 저장본도 다시 만들지 않고 원문에서 계산해 이어받는다(시험 입력 칸은 같은 기준으로 제외)
+        changed_d = sorted(d for d in cur if old_dh.get(d) != cur[d])
+        removed_d = sorted(d for d in old_dh if d not in cur)
+        if not changed_d and not removed_d:
+            miss = missing_langs(old['display'])
+            if not miss:
+                return 'skip'
+            disp, dropped = build_display_i18n(old['out'], old.get('flags', []), old.get('warn', []), old['cells'], old.get('quant', ''), have=old['display'], say=say)
+            old['display'], old['dropped'], old['dept_hash'] = disp, dropped, cur
+            _save(path, old)
+            left = missing_langs(disp)
+            say(f'번역 보충: {ent} {code} — 채움 {len(miss) - len(left)}개 / 아직 빠짐 {left}')
+            return 'filled'
+        # 바뀐 부서만 다시 요약한다
+        gone = set(changed_d) | set(removed_d)
+        part_cells = [c for c in cells if c['dept'] in changed_d]
+        out_new, flags_new, warn_new = {}, [], []
+        if part_cells:
+            say(f'{ent} {code}: 바뀐 부서 {changed_d} 만 다시 요약 (그대로 둔 부서 {len(cur) - len(changed_d)}개, 사라진 부서 {removed_d})')
+            out_new, flags_new = S.summarize(name, period, part_cells, quant)
+            warn_new = S.verify_claims(out_new, part_cells, quant)
+        else:
+            say(f'{ent} {code}: 사라진 부서 {removed_d} 만 정리 (AI 호출 없음)')
+        out = {}
+        for sec in ('sec5', 'sec6', 'sec7'):
+            out[sec] = {k: v for k, v in ((old.get('out') or {}).get(sec) or {}).items() if _owner(k) not in gone}
+            for k, v in ((out_new or {}).get(sec) or {}).items():
+                if _owner(k) in changed_d:
+                    out[sec][k] = v
+        flags = [f for f in old.get('flags', []) if _owner(f[1]) not in gone] + [f for f in flags_new if _owner(f[1]) in changed_d]
+        warn = [w for w in old.get('warn', []) if _owner((str(w.get('위치', '')).split('/') + ['', ''])[1]) not in gone] \
+            + [w for w in warn_new if _owner((str(w.get('위치', '')).split('/') + ['', ''])[1]) in changed_d]
+        disp, dropped = build_display_i18n(out, flags, warn, cells, quant, have=old['display'], say=say, old_ko=old['display'].get('ko'))
+        _save(path, {'ent': ent, 'code': code, 'made_at': now, 'hash': h, 'dept_hash': cur, 'quant': quant, 'cells': cells, 'out': out,
+                     'flags': flags, 'warn': warn, 'display': disp, 'dropped': dropped})
+        say(f'저장(부분 갱신): {path} / 사실 검증 경고 {len(warn)}건, 화면에서 뺀 줄 {len(dropped)}개 / 번역 빠짐 {missing_langs(disp)}')
+        _log_detail(say, dropped, warn_new)
+        return 'updated'
+
     out, flags = S.summarize(name, period, cells, quant)
     say(f'{ent} {code}: 숫자 검수 대상 {len(flags)}건 — 사실 검증 중…')
     warn = S.verify_claims(out, cells, quant)
     disp, dropped = build_display_i18n(out, flags, warn, cells, quant, say=say)
-    _save(path, {'ent': ent, 'code': code, 'made_at': datetime.datetime.now().strftime('%Y-%m-%d %H:%M'), 'hash': h,
+    _save(path, {'ent': ent, 'code': code, 'made_at': now, 'hash': h, 'dept_hash': cur,
                  'quant': quant, 'cells': cells, 'out': out, 'flags': flags, 'warn': warn, 'display': disp, 'dropped': dropped})
     say(f'저장: {path} / 사실 검증 경고 {len(warn)}건, 화면에서 뺀 줄 {len(dropped)}개 / 번역 빠짐 {missing_langs(disp)}')
+    _log_detail(say, dropped, warn)
+    return 'made'
+
+
+def _log_detail(say, dropped, warn):
     for d_ in dropped:
         say(f'   뺌: {d_}')
     for w_ in warn:
         say(f"   경고: {str(w_.get('위치', ''))} — {str(w_.get('문제', ''))[:60]}")
-    return 'made'
 
 
 def auto_codes(week, year=None, today=None):

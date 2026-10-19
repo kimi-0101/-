@@ -80,7 +80,7 @@ class T(unittest.TestCase):
     def test_changed_source_rebuilds(self):
         B.build('TW', 'M09', cells=CELLS, say=lambda *_: None)
         c2 = [dict(CELLS[0], text='매출 100만 달성 후 유지')] + CELLS[1:]
-        self.assertEqual(B.build('TW', 'M09', cells=c2, say=lambda *_: None), 'made')
+        self.assertEqual(B.build('TW', 'M09', cells=c2, say=lambda *_: None), 'updated')      # 바뀐 부서만 다시 요약
 
     def test_empty(self):
         self.assertEqual(B.build('TW', 'M09', cells=[{'sec': 'sec6', 'dept': 'GM', 'item': 'x', 'text': '測試'}]), 'empty')
@@ -117,6 +117,133 @@ class T(unittest.TestCase):
         import summary_render as SR
         h = SR._cards('sec6', {'sec6': {'영업': {'결과': [['가', '나'], None]}}}, 'ko')
         self.assertEqual(h.count('class="cr"'), 2)
+
+
+def _map_str(x, f):
+    if isinstance(x, dict):
+        return {k: _map_str(v, f) for k, v in x.items()}
+    if isinstance(x, list):
+        return [_map_str(v, f) for v in x]
+    return f(x) if isinstance(x, str) else x
+
+
+class Inc(unittest.TestCase):
+    """부서 단위 증분 요약: 바뀐 부서만 다시 요약·검증·번역한다"""
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        B.DRAFT_DIR = self.tmp
+        B.QUANT_DIR = os.path.join(self.tmp, 'q')
+        self.sum_calls, self.ver_calls, self.tr_calls = [], [], []
+        self.fail_tr = False
+        S.GEMINI_RETRY_WAIT = 0
+
+        def summarize(name, period, cells, quant):
+            self.sum_calls.append(sorted({c['dept'] for c in cells}))
+            out = {'sec5': {}, 'sec6': {}, 'sec7': {}}
+            for c in cells:
+                if c['sec'] == '6':
+                    out['sec6'].setdefault(c['dept'], {})['결과'] = [f"{c['dept']}:{c['text']}", None]
+                if c['sec'] == '7':
+                    key = 'GM(HQ 요청)' if c['item'] == 'HQ 요청사항' else c['dept']
+                    out['sec7'].setdefault(key, []).append(c['text'])
+            return out, []
+        S.summarize = summarize
+        S.verify_claims = lambda out, cells, quant='', model=None: (self.ver_calls.append(sorted({c['dept'] for c in cells})), [])[1]
+
+        def tr(struct, name):
+            if self.fail_tr:
+                raise RuntimeError('limit')
+            self.tr_calls.append((name, struct))
+            return _map_str(struct, lambda s: f'{name[:2]}|{s}')
+        S.translate_struct = tr
+        self.cells = [{'sec': '6', 'dept': '영업', 'item': '총평', 'text': '영업 원문 가나다라'},
+                      {'sec': '6', 'dept': 'GM', 'item': '총평', 'text': 'GM 원문 가나다라'},
+                      {'sec': '7', 'dept': 'GM', 'item': '향후전략', 'text': 'GM 전략 하나둘셋'},
+                      {'sec': '7', 'dept': 'GM', 'item': 'HQ 요청사항', 'text': 'HQ 요청 하나둘셋'}]
+        self.say = lambda *_: None
+
+    def load(self):
+        return json.load(open(os.path.join(self.tmp, 'HK_W41.json'), encoding='utf-8'))
+
+    def test_only_changed_dept_is_summarized_verified_and_translated(self):
+        self.assertEqual(B.build('HK', 'W41', cells=self.cells, say=self.say), 'made')
+        self.assertEqual((self.sum_calls, self.ver_calls), ([['GM', '영업']], [['GM', '영업']]))
+        first = self.load()
+        self.tr_calls.clear()
+        c2 = [dict(c, text='영업 원문 새로 고침') if c['dept'] == '영업' else c for c in self.cells]
+        self.assertEqual(B.build('HK', 'W41', cells=c2, say=self.say), 'updated')
+        self.assertEqual(self.sum_calls[-1], ['영업'])                                  # 영업만 요약
+        self.assertEqual(self.ver_calls[-1], ['영업'])                                  # 영업만 검증
+        d = self.load()
+        self.assertEqual(d['out']['sec6']['GM'], first['out']['sec6']['GM'])             # GM 은 그대로
+        self.assertEqual(d['out']['sec7']['GM(HQ 요청)'], first['out']['sec7']['GM(HQ 요청)'])
+        self.assertIn('새로 고침', d['display']['ko']['sec6']['영업']['결과'][0])
+        for name, struct in self.tr_calls:                                               # 번역도 바뀐 줄만
+            self.assertEqual(list(struct['sec6']), ['영업']); self.assertEqual(struct['sec7'], {})
+        self.assertEqual(sorted(d['display']), ['en', 'ko', 'zh'])
+        self.assertTrue(d['display']['en']['sec6']['GM']['결과'][0].startswith('영어|'))   # GM 번역은 기존 것을 유지
+        self.assertIn('새로 고침', d['display']['zh']['sec6']['영업']['결과'][0])
+
+    def test_hq_request_belongs_to_gm(self):
+        B.build('HK', 'W41', cells=self.cells, say=self.say)
+        c2 = [dict(c, text='GM 전략 다시 씀 하나') if c['item'] == '향후전략' else c for c in self.cells]
+        B.build('HK', 'W41', cells=c2, say=self.say)
+        self.assertEqual(self.sum_calls[-1], ['GM'])
+        d = self.load()
+        self.assertIn('GM(HQ 요청)', d['out']['sec7'])                                    # GM 이 바뀌면 GM(HQ 요청)도 함께 새로 만들어짐
+        self.assertEqual(d['out']['sec7']['GM'], ['GM 전략 다시 씀 하나'])
+
+    def test_legacy_draft_without_dept_hash_is_adopted_without_ai(self):
+        B.build('HK', 'W41', cells=self.cells, say=self.say)
+        d = self.load(); d.pop('dept_hash'); d.pop('hash')                              # 예전 형식 저장본
+        json.dump(d, open(os.path.join(self.tmp, 'HK_W41.json'), 'w', encoding='utf-8'), ensure_ascii=False)
+        n = (len(self.sum_calls), len(self.ver_calls), len(self.tr_calls))
+        self.assertEqual(B.build('HK', 'W41', cells=self.cells, say=self.say), 'skip')
+        self.assertEqual((len(self.sum_calls), len(self.ver_calls), len(self.tr_calls)), n)   # AI 호출 0
+
+    def test_legacy_draft_with_test_input_cell_is_still_adopted(self):
+        B.build('HK', 'W41', cells=self.cells, say=self.say)
+        d = self.load(); d.pop('dept_hash'); d.pop('hash')
+        d['cells'] = d['cells'] + [{'sec': '6', 'dept': '영업', 'item': '특이사항', 'text': '測試'}]      # 예전 저장본에 남은 2자 시험 입력
+        json.dump(d, open(os.path.join(self.tmp, 'HK_W41.json'), 'w', encoding='utf-8'), ensure_ascii=False)
+        n = len(self.sum_calls)
+        self.assertEqual(B.build('HK', 'W41', cells=self.cells, say=self.say), 'skip')
+        self.assertEqual(len(self.sum_calls), n)
+
+    def test_removed_dept_needs_no_ai_and_is_dropped_everywhere(self):
+        B.build('HK', 'W41', cells=self.cells, say=self.say)
+        n = (len(self.sum_calls), len(self.ver_calls), len(self.tr_calls))
+        c2 = [c for c in self.cells if c['dept'] != '영업']
+        self.assertEqual(B.build('HK', 'W41', cells=c2, say=self.say), 'updated')
+        self.assertEqual((len(self.sum_calls), len(self.ver_calls), len(self.tr_calls)), n)
+        d = self.load()
+        for lg in ('ko', 'en', 'zh'):
+            self.assertNotIn('영업', d['display'][lg]['sec6'])
+            self.assertIn('GM', d['display'][lg]['sec6'])
+
+    def test_translation_failure_in_partial_update_is_filled_later_by_full_translation(self):
+        B.build('HK', 'W41', cells=self.cells, say=self.say)
+        c2 = [dict(c, text='영업 원문 새로 고침') if c['dept'] == '영업' else c for c in self.cells]
+        self.fail_tr = True
+        B.build('HK', 'W41', cells=c2, say=self.say)
+        self.assertEqual(sorted(self.load()['display']), ['ko'])                          # 낡은 번역을 섞어 두지 않고 비워 둔다
+        self.fail_tr = False
+        self.assertEqual(B.build('HK', 'W41', cells=c2, say=self.say), 'filled')
+        self.assertEqual(sorted(self.load()['display']), ['en', 'ko', 'zh'])
+
+    def test_unchanged_is_skipped_and_force_redoes_everything(self):
+        B.build('HK', 'W41', cells=self.cells, say=self.say)
+        self.assertEqual(B.build('HK', 'W41', cells=self.cells, say=self.say), 'skip')
+        self.assertEqual(B.build('HK', 'W41', cells=self.cells, force=True, say=self.say), 'made')
+        self.assertEqual(self.sum_calls[-1], ['GM', '영업'])
+
+    def test_hand_made_translation_survives_unrelated_dept_change(self):
+        B.build('HK', 'W41', cells=self.cells, say=self.say)
+        d = self.load(); d['display']['en']['sec6']['GM']['결과'][0] = '손으로 다듬은 번역'
+        json.dump(d, open(os.path.join(self.tmp, 'HK_W41.json'), 'w', encoding='utf-8'), ensure_ascii=False)
+        c2 = [dict(c, text='영업 원문 새로 고침') if c['dept'] == '영업' else c for c in self.cells]
+        B.build('HK', 'W41', cells=c2, say=self.say)
+        self.assertEqual(self.load()['display']['en']['sec6']['GM']['결과'][0], '손으로 다듬은 번역')
 
 
 class Tr(unittest.TestCase):
