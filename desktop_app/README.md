@@ -32,6 +32,15 @@ python wj_app.py               # [앱 모드] 주소창 없는 독립 앱 창으
 python wj_app.py --reset       # 저장된 로그인·화면 지우고 시작
 ```
 
+## 바탕화면 바로가기 (더블클릭하면 앱이 바로 열림)
+
+```powershell
+cd "<이 폴더>\desktop_app"
+powershell -ExecutionPolicy Bypass -File .\make_shortcut.ps1
+```
+바탕화면에 **영업일지** 아이콘(웃는 수첩)이 생깁니다. 검은 창 없이 앱 창만 열립니다(`pythonw`). 서버 주소가 없는 등 시작할 수 없을 때는 메시지 창으로 알립니다.
+아이콘은 `wj_app.ico` (다시 만들려면 `python make_icon.py`, Pillow 필요).
+
 `.exe` 로 만들기: `.\build_exe.ps1` → `dist\WJApp.exe`
 
 ## 시험 (개발용)

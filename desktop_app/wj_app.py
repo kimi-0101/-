@@ -47,6 +47,17 @@ class UpstreamError(Exception):
     pass
 
 
+def notify(msg):
+    """오류를 화면에 알린다. 바로가기(pythonw)로 켠 경우엔 콘솔이 없어서 print 만으로는 보이지 않으므로 윈도우 메시지 창도 띄운다."""
+    print(msg)
+    if sys.stdout is None or not getattr(sys.stdout, 'isatty', lambda: False)():
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(0, str(msg), APP_TITLE, 0x10)
+        except Exception:
+            pass                                                # 윈도우가 아니면(시험 환경 등) 메시지 창 없이 넘어간다
+
+
 def log(st, msg):
     """걸린 시간 등을 화면에 찍고 app.log 에도 남긴다 (느릴 때 어디서 걸리는지 보려는 용도)."""
     line = f"{time.strftime('%H:%M:%S')} {msg}"
@@ -442,7 +453,7 @@ def main(argv=None):
         return 0
     url = load_api_url(a.api_url)
     if not url:
-        print('서버 주소가 없습니다. --api-url 을 주거나 api_url.txt 를 이 프로그램 옆에 두세요.')
+        notify('서버 주소가 없습니다. api_url.txt 를 이 프로그램 옆에 두거나 --api-url 을 주세요.')
         return 2
     st = State(url)
     if a.reset:
@@ -452,7 +463,7 @@ def main(argv=None):
     if mv:
         ok, need = check_min_version(mv)
         if not ok:
-            print(f'이 앱({APP_VERSION})은 너무 오래되었습니다. {need} 이상으로 업데이트하세요.')
+            notify(f'이 앱({APP_VERSION})은 너무 오래되었습니다. {need} 이상으로 업데이트하세요.')
             return 3
     start_server(st)
     if st.session:                                             # 어제 로그인이 아직 유효하면 열기 전에 미리 받아 둔다
