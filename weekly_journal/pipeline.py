@@ -135,6 +135,7 @@ def main(argv=None):
     ap.add_argument('--summary', choices=['auto', 'yes', 'no'], default='auto', help='SUMMARY 5·6·7 정리본 새로 만들기 (auto: --dry-run 이 아닐 때만, no: 만들지 않음)')
     ap.add_argument('--summary-codes', nargs='*', help='정리할 코드 (예: M09 W41). 없으면 그 주·이번 달·지난 달 자동')
     ap.add_argument('--summary-force', action='store_true', help='원문이 같아도 정리본을 다시 만든다')
+    ap.add_argument('--translator', choices=['auto', 'claude', 'gemini'], default='auto', help='번역기: auto(Gemini 키가 있으면 Gemini, 없으면 Claude) / claude(전부 Claude — 사용량 측정용) / gemini')
     ap.add_argument('--summary-only', action='store_true', help='정리본만 만들고 끝낸다 (화면 생성·반영은 하지 않음. 새벽 등 따로 돌릴 때)')
     ap.add_argument('--no-refresh', action='store_true', help='과거 주 ERP 재정렬(refresh_past_weeks.py)을 건너뛴다')
     ap.add_argument('--no-ledger', action='store_true', help='시작 전에 ERP 원장을 갱신하지 않는다')
@@ -145,6 +146,7 @@ def main(argv=None):
     ap.add_argument('--archive', choices=['auto', 'yes', 'no'], default='auto', help='주차별 보관본도 올린다 (auto: 최종(final)일 때만)')
     a = ap.parse_args(argv)
 
+    os.environ['WJ_TRANSLATOR'] = a.translator
     if a.summary_only:
         res = build_summaries(a.week, a.only, 'yes' if a.summary == 'auto' else a.summary, False, a.summary_codes, a.summary_force)
         return 0 if not any(v in ('failed', 'read-failed') for v in res.values()) else 6

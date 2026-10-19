@@ -66,11 +66,46 @@ def build_prompt(ent, period, cells, quant_text):
     return '\n'.join(lines)
 
 
+USAGE = {'calls': 0, 'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0, 'cost': 0.0, 'metered': 0}
+
+
+def usage_reset():
+    for k in USAGE:
+        USAGE[k] = 0.0 if k == 'cost' else 0
+
+
+def usage_report():
+    u = USAGE
+    if not u['calls']:
+        return 'Claude 호출 없음'
+    tot = u['input'] + u['output'] + u['cache_read'] + u['cache_write']
+    return (f"Claude 호출 {u['calls']}번(측정 {u['metered']}번) — 입력 {u['input']:,} · 출력 {u['output']:,} · 캐시읽기 {u['cache_read']:,} · 캐시쓰기 {u['cache_write']:,} "
+            f"(합계 {tot:,} 토큰, 환산 약 ${u['cost']:.2f})")
+
+
+def _meter(stdout):
+    """claude --output-format json 결과에서 본문과 토큰을 꺼낸다. JSON 이 아니면 원문 그대로."""
+    USAGE['calls'] += 1
+    try:
+        d = json.loads(stdout)
+        text = d['result']
+        us = d.get('usage') or {}
+    except (ValueError, KeyError, TypeError):
+        return stdout
+    USAGE['metered'] += 1
+    USAGE['input'] += int(us.get('input_tokens') or 0)
+    USAGE['output'] += int(us.get('output_tokens') or 0)
+    USAGE['cache_read'] += int(us.get('cache_read_input_tokens') or 0)
+    USAGE['cache_write'] += int(us.get('cache_creation_input_tokens') or 0)
+    USAGE['cost'] += float(d.get('total_cost_usd') or 0)
+    return text
+
+
 LEAN_SYSTEM = '너는 영업일지 정리 도우미다. 요청한 형식의 출력만 낸다.'
 
 
 def _claude_cmds(exe, model):
-    base = [exe, '-p', '--output-format', 'text', '--no-session-persistence', '--tools', '']
+    base = [exe, '-p', '--output-format', 'json', '--no-session-persistence', '--tools', '']
     if model:
         base += ['--model', model]
     plain = (base, None)
@@ -93,7 +128,7 @@ def call_claude(prompt, model=None, timeout=300):
     for k, (cmd, cwd) in enumerate(tries):
         r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, encoding='utf-8', env=env, timeout=timeout, cwd=cwd)
         if r.returncode == 0:
-            return r.stdout
+            return _meter(r.stdout)
         err = (r.stderr or r.stdout)[-300:]
         if k == len(tries) - 1 or 'limit' in err.lower():                 # 사용 한도면 다시 불러도 소용없다
             raise RuntimeError(f'claude 종료코드 {r.returncode}: {err}')
@@ -235,11 +270,16 @@ def translate_struct(ko_struct, lang_name, model=None):
         if extra or missing:
             return f'숫자 늘어남 {extra} / 빠짐 {missing}'
         return ''
+    use_claude = os.environ.get('WJ_TRANSLATOR', 'auto').lower() == 'claude'
+    ask = (lambda p: call_claude(p, model=model)) if use_claude else call_gemini
+    who = 'Claude' if use_claude else 'Gemini'
     key_missing = False
     for attempt in (1, 2):
         try:
-            out = parse_json(call_gemini(prompt))
+            out = parse_json(ask(prompt))
         except RuntimeError as ex:
+            if use_claude:
+                raise                                                      # 사용 한도 등은 위에서 처리한다
             if 'gemini 키 없음' in str(ex):
                 key_missing = True
                 break
@@ -247,15 +287,15 @@ def translate_struct(ko_struct, lang_name, model=None):
             time.sleep(GEMINI_RETRY_WAIT)
             continue
         except Exception as ex:                                           # 응답이 JSON 이 아닌 경우 등
-            print(f'[알림] Gemini 응답 해석 실패({attempt}/2): {ex!r}'[:200])
+            print(f'[알림] {who} 응답 해석 실패({attempt}/2): {ex!r}'[:200])
             continue
         why = problem(out)
         if not why:
             return out
-        print(f'[알림] Gemini 번역이 검사에 걸림({attempt}/2) — {why}')
+        print(f'[알림] {who} 번역이 검사에 걸림({attempt}/2) — {why}')
         prompt = base_prompt + f'\n\n[이전 번역의 문제] {why}. 숫자와 구조를 원문과 똑같이 맞춰 다시 번역한다.'
     if not key_missing:
-        print('[알림] 번역을 채우지 못함 — Claude 로 넘기지 않음(사용량 절약). 다음 실행에서 번역만 다시 시도합니다.')
+        print(f'[알림] 번역을 채우지 못함 — {who} 재시도 한계. 다른 번역기로 넘기지 않음(사용량 절약). 다음 실행에서 번역만 다시 시도합니다.')
         return None
     out = parse_json(call_claude(base_prompt, model=model))               # Gemini 키가 없을 때만 Claude 로 번역
     why = problem(out)

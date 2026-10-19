@@ -162,6 +162,27 @@ class Tr(unittest.TestCase):
         S.call_gemini = lambda p, timeout=120: json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['September target 25% achieved']}})
         self.assertIsNone(S.translate_struct(ko, '영어'))
 
+    def test_translator_claude_skips_gemini(self):
+        os.environ['WJ_TRANSLATOR'] = 'claude'
+        try:
+            def g(p, timeout=120):
+                raise AssertionError('gemini 를 부르면 안 됨')
+            S.call_gemini = g
+            self.assertTrue(S.translate_struct(self.KO, '영어'))
+            self.assertEqual(self.claude_calls, 1)
+        finally:
+            os.environ.pop('WJ_TRANSLATOR', None)
+
+    def test_usage_is_metered_from_json_output(self):
+        S.usage_reset()
+        out = S._meter(json.dumps({'result': '본문', 'total_cost_usd': 0.25, 'usage': {'input_tokens': 10, 'output_tokens': 20, 'cache_read_input_tokens': 300, 'cache_creation_input_tokens': 40}}))
+        self.assertEqual(out, '본문')
+        self.assertEqual(S.USAGE['calls'], 1); self.assertEqual(S.USAGE['metered'], 1)
+        self.assertEqual((S.USAGE['input'], S.USAGE['output'], S.USAGE['cache_read'], S.USAGE['cache_write']), (10, 20, 300, 40))
+        self.assertIn('370 토큰', S.usage_report())
+        self.assertEqual(S._meter('그냥 글'), '그냥 글')                      # JSON 이 아니면 원문 그대로(측정만 못 함)
+        self.assertEqual((S.USAGE['calls'], S.USAGE['metered']), (2, 1))
+
     def test_claude_lean_command_falls_back_to_plain(self):
         import subprocess, shutil
         cmds = []

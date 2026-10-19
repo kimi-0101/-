@@ -204,6 +204,7 @@ def run_all(ents, codes, say=print, force=False, max_fail=2):
     """여러 법인·코드를 차례로. 시트는 법인당 한 번만 읽고, 한 건이 실패해도 나머지는 계속한다.
     연속으로 max_fail 번 실패하면(사용 한도 등) 나머지는 건너뛴다. 반환: {'TW M09': '상태', ...}"""
     res, fails = {}, 0
+    S.usage_reset()
     for ent in ents:
         try:
             got = R.read_many(ent, codes)
@@ -228,6 +229,7 @@ def run_all(ents, codes, say=print, force=False, max_fail=2):
                 say(f'[경고] {key} 정리 실패({fails}/{max_fail}) — {ex!r}')
                 if fails >= max_fail:
                     say('[경고] 연속 실패 — 사용 한도 등으로 보고 나머지 정리는 건너뜁니다 (다음 실행에서 이어서 만듦)')
+    say('[사용량] ' + S.usage_report())
     return res
 
 
