@@ -255,7 +255,7 @@ class Tr(unittest.TestCase):
         S.translate_struct = REAL_TRANSLATE
         S.GEMINI_RETRY_WAIT = 0
         self.claude_calls = 0
-        def claude(p, model=None):
+        def claude(p, model=None, **kw):
             self.claude_calls += 1
             return self.OK
         S.call_claude = claude
@@ -335,6 +335,27 @@ class Tr(unittest.TestCase):
         ko = {'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['3,693만 달성, 두 자릿수 성장']}}
         S.call_gemini = lambda p, timeout=120: json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['36.93m achieved, double-digit growth']}})
         self.assertTrue(S.translate_struct(ko, '영어'))
+
+    def test_per_call_log_line_and_thinking_off_and_model_env(self):
+        import io, subprocess, shutil, contextlib
+        envs = []
+        class R:
+            returncode, stderr = 0, ''
+            stdout = json.dumps({'result': '본문', 'usage': {'output_tokens': 1234}, 'modelUsage': {'claude-test-1': {}}})
+        S.call_claude = REAL_CALL_CLAUDE
+        old_run, old_which = subprocess.run, shutil.which
+        subprocess.run, shutil.which = (lambda cmd, **kw: (envs.append((cmd, kw['env'])), R())[1]), (lambda x: 'claude')
+        os.environ['WJ_CLAUDE_MODEL'] = 'sonnet'
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                self.assertEqual(S.call_claude('x', label='요약'), '본문')
+        finally:
+            subprocess.run, shutil.which = old_run, old_which
+            os.environ.pop('WJ_CLAUDE_MODEL', None)
+        self.assertIn('[호출] 요약', buf.getvalue()); self.assertIn('출력 1,234토큰', buf.getvalue()); self.assertIn('claude-test-1', buf.getvalue())
+        self.assertEqual(envs[0][1]['MAX_THINKING_TOKENS'], '0')
+        self.assertIn('sonnet', envs[0][0])
 
     def test_claude_lean_command_falls_back_to_plain(self):
         import subprocess, shutil

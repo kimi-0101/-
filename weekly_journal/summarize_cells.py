@@ -85,8 +85,8 @@ def usage_report():
             f"(합계 {tot:,} 토큰, 환산 약 ${u['cost']:.2f})")
 
 
-def _meter(stdout):
-    """claude --output-format json 결과에서 본문과 토큰을 꺼낸다. JSON 이 아니면 원문 그대로."""
+def _meter(stdout, label='', secs=None):
+    """claude --output-format json 결과에서 본문과 토큰을 꺼내 합산하고, 호출마다 한 줄 남긴다. JSON 이 아니면 원문 그대로."""
     try:
         d = json.loads(stdout)
         text = d['result']
@@ -95,14 +95,19 @@ def _meter(stdout):
         with _ULOCK:
             USAGE['calls'] += 1
         return stdout
+    out_tok = int(us.get('output_tokens') or 0)
     with _ULOCK:                                                  # 영어·중국어를 동시에 부르므로 합산은 잠그고 한다
         USAGE['calls'] += 1
         USAGE['metered'] += 1
         USAGE['input'] += int(us.get('input_tokens') or 0)
-        USAGE['output'] += int(us.get('output_tokens') or 0)
+        USAGE['output'] += out_tok
         USAGE['cache_read'] += int(us.get('cache_read_input_tokens') or 0)
         USAGE['cache_write'] += int(us.get('cache_creation_input_tokens') or 0)
         USAGE['cost'] += float(d.get('total_cost_usd') or 0)
+    if label:
+        models = ','.join((d.get('modelUsage') or {}).keys()) or '?'
+        sec = f'{secs:.0f}초 · ' if secs is not None else ''
+        print(f'   [호출] {label} · {sec}출력 {out_tok:,}토큰 · 모델 {models}', flush=True)
     return text
 
 
@@ -125,17 +130,21 @@ def _claude_cmds(exe, model):
     return [lean, plain]                                                  # 가벼운 방식이 안 되면(구버전·신뢰 문제 등) 예전 방식으로 한 번 더
 
 
-def call_claude(prompt, model=None, timeout=300):
+def call_claude(prompt, model=None, timeout=300, label=''):
     import shutil
     exe = shutil.which('claude') or shutil.which('claude.cmd')      # Windows 는 npm 이 claude.cmd 로 설치함
     if not exe:
         raise RuntimeError('claude 명령을 찾지 못함 (PATH 확인)')
     env = dict(os.environ, PYTHONIOENCODING='utf-8', PYTHONUTF8='1')
+    if os.environ.get('WJ_THINKING', '0') != '1':
+        env['MAX_THINKING_TOKENS'] = '0'                             # 긴 '추론'은 출력 토큰·시간을 크게 늘린다. 정리·번역은 규칙이 정해져 있고 숫자 검사가 따로 있어 끈다 (되돌리려면 WJ_THINKING=1)
+    model = model or os.environ.get('WJ_CLAUDE_MODEL') or None       # 예: WJ_CLAUDE_MODEL=sonnet
     tries = _claude_cmds(exe, model)
     for k, (cmd, cwd) in enumerate(tries):
+        t0 = time.time()
         r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, encoding='utf-8', env=env, timeout=timeout, cwd=cwd)
         if r.returncode == 0:
-            return _meter(r.stdout)
+            return _meter(r.stdout, label, time.time() - t0)
         err = (r.stderr or r.stdout)[-300:]
         if k == len(tries) - 1 or 'limit' in err.lower():                 # 사용 한도면 다시 불러도 소용없다
             raise RuntimeError(f'claude 종료코드 {r.returncode}: {err}')
@@ -229,14 +238,14 @@ def verify_claims(out, cells, quant_text='', model=None):
     src = '\n'.join(f"- 섹션{c['sec']} / {c['dept']} / {c['item']}: {c['text']}" for c in cells)
     q = quant_text.strip() or '(없음)'
     prompt = '\n\n'.join([CHECK_PROMPT, '[정량]\n' + q, '[원문]\n' + src, '[정리본]\n' + json.dumps(out, ensure_ascii=False)])
-    txt = call_claude(prompt, model=model)
+    txt = call_claude(prompt, model=model, label='검증')
     m = re.search(r'\[.*\]', txt, re.S)
     return json.loads(m.group(0)) if m else []
 
 
 def summarize(ent, period, cells, quant_text='', model=None):
     prompt = build_prompt(ent, period, cells, quant_text)
-    out = parse_json(call_claude(prompt, model=model))
+    out = parse_json(call_claude(prompt, model=model, label='요약'))
     return out, check_numbers(out, cells, quant_text)
 
 
@@ -295,7 +304,7 @@ def translate_struct(ko_struct, lang_name, model=None):
             return f'숫자 늘어남 {extra} / 빠짐 {missing}'
         return ''
     use_claude = os.environ.get('WJ_TRANSLATOR', 'auto').lower() == 'claude'
-    ask = (lambda p: call_claude(p, model=model)) if use_claude else call_gemini
+    ask = (lambda p: call_claude(p, model=model, label=f'번역({lang_name[:2]})')) if use_claude else call_gemini
     who = 'Claude' if use_claude else 'Gemini'
     key_missing = False
     for attempt in (1, 2):
@@ -321,7 +330,7 @@ def translate_struct(ko_struct, lang_name, model=None):
     if not key_missing:
         print(f'[알림] 번역을 채우지 못함 — {who} 재시도 한계. 다른 번역기로 넘기지 않음(사용량 절약). 다음 실행에서 번역만 다시 시도합니다.')
         return None
-    out = parse_json(call_claude(base_prompt, model=model))               # Gemini 키가 없을 때만 Claude 로 번역
+    out = parse_json(call_claude(base_prompt, model=model, label=f'번역({lang_name[:2]})'))               # Gemini 키가 없을 때만 Claude 로 번역
     why = problem(out)
     if why:
         print(f'[알림] Claude 번역이 검사에 걸려 버림 — {why}')
