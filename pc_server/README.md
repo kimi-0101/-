@@ -31,3 +31,15 @@ Unregister-ScheduledTask -TaskName WJ_Backup -Confirm:$false                    
 ```
 python -I pc_server\tests\test_backup.py
 ```
+
+## SUMMARY 요약·번역 예약 실행 (한도가 풀린 뒤 한 번, 실패하면 이어서 재시도)
+
+```powershell
+$root = 'C:\Users\더네이쳐홀딩스\Desktop\중국판매데이터RAW'
+$a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -File "' + $root + '\pc_server\run_summary_retry.ps1" -Week 41 -Codes M09 -Fresh') -WorkingDirectory $root
+$t = New-ScheduledTaskTrigger -Once -At '22:35'
+$s = New-ScheduledTaskSettingsSet -StartWhenAvailable -WakeToRun -ExecutionTimeLimit (New-TimeSpan -Hours 5)
+Register-ScheduledTask -TaskName WJ_Summary_M09 -Action $a -Trigger $t -Settings $s -Force
+```
+결과는 `wj_summary_run_log.txt` 에 쌓입니다. 끝나면 `Unregister-ScheduledTask -TaskName WJ_Summary_M09 -Confirm:$false`.
+점검만 따로: `python weekly_journal\check_summary.py --code M09`

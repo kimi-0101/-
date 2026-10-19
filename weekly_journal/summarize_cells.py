@@ -319,10 +319,8 @@ def _texts(x):
     return [x] if isinstance(x, str) else []
 
 
-def translate_struct(ko_struct, lang_name, model=None):
-    """한글 정리본(sec5/sec6/sec7 구조)을 다른 언어로 번역. 구조와 숫자가 원본과 같을 때만 반환, 아니면 None.
-    번역은 Gemini 우선. 걸리면 이유를 알려 Gemini 로 한 번 더(Claude 로 넘기지 않음), Gemini 키가 없을 때만 Claude."""
-    prompt = base_prompt = TRANS_PROMPT.format(lang=lang_name) + '\n\n' + json.dumps(ko_struct, ensure_ascii=False)
+def translation_checker(ko_struct):
+    """한글 정리본 구조를 기준으로, 번역본이 구조·숫자가 어긋나는지 알려 주는 함수를 돌려준다. 어긋남이 없으면 '' (번역을 만들 때와 저장본 점검에서 같은 기준을 쓴다)."""
     def shape(x):
         if isinstance(x, dict):
             return {k: shape(v) for k, v in x.items()}
@@ -354,11 +352,19 @@ def translate_struct(ko_struct, lang_name, model=None):
         """번역이 원본과 어긋난 점. 없으면 ''. 숫자는 새로 생기면 안 되고, 월(月) 숫자만 빠져도 된다."""
         if shape(out) != shape(ko_struct):
             return '구조(키·배열 길이)가 다름'
-        got = nums(' '.join(_texts(out)))
+        got = nums(re.sub(r'\b[HQ][1-4]\b', ' ', ' '.join(_texts(out))))        # 'H2'(하반기)·'Q3'(3분기) 는 한글의 반기·분기를 옮긴 표기라 숫자로 세지 않는다
         extra, missing = sorted(got - want - man_ok), sorted(n for n in want - got if n not in months and n not in man_src and n not in spelled)
         if extra or missing:
             return f'숫자 늘어남 {extra} / 빠짐 {missing}'
         return ''
+    return problem
+
+
+def translate_struct(ko_struct, lang_name, model=None):
+    """한글 정리본(sec5/sec6/sec7 구조)을 다른 언어로 번역. 구조와 숫자가 원본과 같을 때만 반환, 아니면 None.
+    번역은 Gemini 우선. 걸리면 이유를 알려 Gemini 로 한 번 더(Claude 로 넘기지 않음), Gemini 키가 없을 때만 Claude."""
+    prompt = base_prompt = TRANS_PROMPT.format(lang=lang_name) + '\n\n' + json.dumps(ko_struct, ensure_ascii=False)
+    problem = translation_checker(ko_struct)
     use_claude = os.environ.get('WJ_TRANSLATOR', 'auto').lower() == 'claude'
     ask = (lambda p: call_claude(p, model=model, label=f'번역({lang_name[:2]})')) if use_claude else call_gemini
     who = 'Claude' if use_claude else 'Gemini'

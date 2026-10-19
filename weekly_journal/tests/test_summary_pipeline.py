@@ -457,6 +457,11 @@ class Tr(unittest.TestCase):
         S.call_gemini = lambda p, timeout=120: json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'EC': ["Singles' Day event for 7 weeks, 20% discount"]}})   # 새 숫자 7 은 불통과
         self.assertIsNone(S.translate_struct(ko, '영어'))
 
+    def test_half_year_and_quarter_tokens_are_not_counted_as_numbers(self):
+        ko = {'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['2026년 하반기 바자회 모색, 3분기 점검']}}
+        S.call_gemini = lambda p, timeout=120: json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['Explore 2026 H2 bazaar, Q3 review']}})
+        self.assertTrue(S.translate_struct(ko, '영어'))
+
     def test_man_unit_and_two_digit_tolerated(self):
         ko = {'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['3,693만 달성, 두 자릿수 성장']}}
         S.call_gemini = lambda p, timeout=120: json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['36.93m achieved, double-digit growth']}})
@@ -542,6 +547,47 @@ class Tr(unittest.TestCase):
         finally:
             subprocess.run, shutil.which = old_run, old_which
         self.assertEqual(len(n), 1)
+
+
+class Check(unittest.TestCase):
+    def setUp(self):
+        import check_summary as C
+        self.C = C
+        self.tmp = tempfile.mkdtemp()
+        B.DRAFT_DIR = self.tmp
+        ko = {'sec5': {}, 'sec6': {'영업': {'결과': ['매출 20% 증가', None]}}, 'sec7': {'GM': ['11월 행사 2회 진행']}}
+        en = {'sec5': {}, 'sec6': {'영업': {'결과': ['Sales up 20%', None]}}, 'sec7': {'GM': ['2 events in November']}}
+        zh = {'sec5': {}, 'sec6': {'영업': {'결과': ['銷售增加20%', None]}}, 'sec7': {'GM': ['11月舉辦2場活動']}}
+        self.draft = {'ent': 'HK', 'code': 'M09', 'made_at': 'x', 'cells': [{'sec': '6', 'dept': '영업', 'item': '총평', 'text': '매출 20% 증가'}, {'sec': '7', 'dept': 'GM', 'item': '향후전략', 'text': '11월 행사 2회 진행'}],
+                      'display': {'ko': ko, 'en': en, 'zh': zh}, 'dropped': [], 'warn': []}
+
+    def save(self, d):
+        json.dump(d, open(os.path.join(self.tmp, 'HK_M09.json'), 'w', encoding='utf-8'), ensure_ascii=False)
+
+    def test_good_draft_passes(self):
+        self.save(self.draft)
+        fails, notes = self.C.check('HK', 'M09', say=lambda *_: None)
+        self.assertEqual((fails, notes), ([], []))
+
+    def test_missing_file_and_missing_language_fail(self):
+        self.assertTrue(self.C.check('HK', 'M09', say=lambda *_: None)[0])
+        d = self.draft; d['display'].pop('zh'); self.save(d)
+        fails, _ = self.C.check('HK', 'M09', say=lambda *_: None)
+        self.assertEqual(len(fails), 1); self.assertIn('중국어', fails[0])
+
+    def test_new_number_in_translation_fails(self):
+        d = self.draft; d['display']['en']['sec6']['영업']['결과'][0] = 'Sales up 25%'; self.save(d)
+        fails, _ = self.C.check('HK', 'M09', say=lambda *_: None)
+        self.assertTrue(any('영어 번역 불일치' in f for f in fails))
+
+    def test_uncovered_dept_and_dropped_lines_are_notes_not_failures(self):
+        d = self.draft
+        d['cells'].append({'sec': '6', 'dept': 'EC', 'item': '총평', 'text': 'EC 원문 가나다라'})
+        d['dropped'] = ['sec6/EC/결과']; d['warn'] = [{'위치': 'sec6/EC/결과', '문제': '원문에 없음'}]
+        self.save(d)
+        fails, notes = self.C.check('HK', 'M09', say=lambda *_: None)
+        self.assertEqual(fails, []); self.assertEqual(len(notes), 3)
+        self.assertTrue(any('EC' in n and '화면에 줄이 없는' in n for n in notes))
 
 
 if __name__ == '__main__':
