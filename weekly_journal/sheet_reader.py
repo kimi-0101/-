@@ -70,15 +70,10 @@ def strip_html(h):
     return re.sub(r'[ \t]+', ' ', re.sub(r'\n\s*\n+', '\n', t)).strip()
 
 
-def read_cells(ent, week):
-    """(원문 칸 목록, 원본 통계). 칸마다 ko → en → zh 순으로 글이 있는 언어를 쓴다. 반환 칸: {sec, dept, item, text, lang}"""
-    url, tok, me = login()
-    r = post(url, {'a': 'pullMany', 'ent': ent, 'weeks': [week], 'photos': False, 'token': tok})
-    res = (r.get('results') or [{}])[0]
-    if not r.get('ok') or not res.get('ok'):
-        raise RuntimeError('읽기 실패: ' + str(r.get('error') or res.get('error')))
+def _cells_from(res, ent, week, me=None):
+    """pullMany 결과 한 주(월)치 → (원문 칸 목록, 통계)"""
     cells = res.get('cells') or {}
-    out, stat = [], {'role': me.get('role'), 'cells_total': len(cells)}
+    out, stat = [], {'role': (me or {}).get('role'), 'cells_total': len(cells)}
     for sec, dc, ik, dn, inm in ROWS:
         got = None
         for lang in ('ko', 'en', 'zh'):
@@ -91,6 +86,29 @@ def read_cells(ent, week):
             out.append({'sec': sec, 'dept': dn, 'item': inm, 'text': got[0], 'lang': got[1], 'by': got[2], 'at': got[3], 'version': got[4]})
     stat['cells_used'] = len(out)
     return out, stat
+
+
+def read_many(ent, weeks):
+    """여러 주(월) 코드를 로그인 한 번·읽기 한 번으로. 반환: {코드: (원문 칸 목록, 통계)}  (읽지 못한 코드는 결과에 없음)"""
+    weeks = list(dict.fromkeys(weeks))
+    url, tok, me = login()
+    r = post(url, {'a': 'pullMany', 'ent': ent, 'weeks': weeks, 'photos': False, 'token': tok})
+    if not r.get('ok'):
+        raise RuntimeError('읽기 실패: ' + str(r.get('error')))
+    res = r.get('results') or []
+    out = {}
+    for w, one in zip(weeks, res):
+        if one and one.get('ok'):
+            out[w] = _cells_from(one, ent, w, me)
+    return out
+
+
+def read_cells(ent, week):
+    """(원문 칸 목록, 원본 통계). 칸마다 ko → en → zh 순으로 글이 있는 언어를 쓴다. 반환 칸: {sec, dept, item, text, lang}"""
+    got = read_many(ent, [week])
+    if week not in got:
+        raise RuntimeError('읽기 실패: ' + week)
+    return got[week]
 
 
 if __name__ == '__main__':
