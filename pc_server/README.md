@@ -13,11 +13,18 @@ python pc_server\backup_journal.py --out D:\wj_backup --keep 60
 - 종료코드 0 성공 / 1 일부 실패 / 2 로그인·설정 오류.
 - **복원 도구는 아직 없습니다.** 저장 형식은 시트의 칸 ID·html·version·작성자·시각 그대로라서 다음 단계에서 복원 스크립트를 만듭니다.
 
-## 매일 새벽 자동 실행 (윈도우 작업 스케줄러)
+## 매주 화요일 자동 실행 (윈도우 작업 스케줄러)
+
+월요일에 부서 기입이 끝나면 화요일 오전에 한 주 분량을 백업합니다.
 
 ```
-schtasks /Create /TN "WJ_Backup" /SC DAILY /ST 05:00 /TR "cmd /c cd /d C:\Users\더네이쳐홀딩스\Desktop\중국판매데이터RAW && python pc_server\backup_journal.py >> wj_backup_log.txt 2>&1"
+powershell -ExecutionPolicy Bypass -File pc_server\register_backup_task.ps1                  # 기본: 화요일 09:00, 90일 보관
+powershell -ExecutionPolicy Bypass -File pc_server\register_backup_task.ps1 -Time 10:30
+Start-ScheduledTask -TaskName WJ_Backup                                                      # 지금 한 번 돌려 보기
+Unregister-ScheduledTask -TaskName WJ_Backup -Confirm:$false                                  # 해제
 ```
+- 그 시각에 PC 가 꺼져 있었으면 켜진 뒤 바로 따라잡아 실행합니다. 로그인된 상태에서 돌고, 결과는 프로젝트 폴더의 `wj_backup_log.txt` 에 쌓입니다.
+- 매주 받으므로 보관은 90일(약 13번)입니다. 날짜 폴더가 곧 그날의 전체 사본입니다.
 
 ## 시험
 
