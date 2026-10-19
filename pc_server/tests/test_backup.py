@@ -46,6 +46,16 @@ class T(unittest.TestCase):
         self.assertEqual(st['saved'], 0)
         self.assertGreater(len(self.calls), n)       # 글 없는 코드는 파일이 없어 다시 묻지만 저장본은 다시 받지 않는다
 
+    def test_no_photo_file_is_refetched_with_photos(self):
+        now = datetime.datetime(2026, 10, 19, 5, 0)
+        B.run(self.out, now=now, photos=False, say=lambda *_: None)
+        self.assertEqual(B.run(self.out, now=now, photos=False, say=lambda *_: None)['saved'], 0)   # 같은 조건이면 건너뜀
+        st = B.run(self.out, now=now, photos=True, say=lambda *_: None)
+        self.assertEqual(st['saved'], 2)                                                           # 사진 포함이면 다시 받음
+        self.assertEqual(B.run(self.out, now=now, photos=True, say=lambda *_: None)['saved'], 0)
+        d = json.load(gzip.open(os.path.join(self.out, '2026-10-19', 'TW_W41.json.gz'), 'rt', encoding='utf-8'))
+        self.assertTrue(d['photos'])
+
     def test_chunk_failure_counted_and_others_continue(self):
         self.fail_chunk = 'W9'
         st = B.run(self.out, now=datetime.datetime(2026, 10, 19), say=lambda *_: None)

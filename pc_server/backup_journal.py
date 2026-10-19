@@ -35,15 +35,28 @@ def has_cells(one):
     return bool(one and one.get('ok') and one.get('cells'))
 
 
-def save_one(day_dir, ent, code, one, taken_at):
+def save_one(day_dir, ent, code, one, taken_at, photos=True):
     os.makedirs(day_dir, exist_ok=True)
     path = os.path.join(day_dir, f'{ent}_{code}.json.gz')
     tmp = path + '.tmp'
-    data = dict(one, ent=ent, code=code, taken_at=taken_at)
+    data = dict(one, ent=ent, code=code, taken_at=taken_at, photos=photos)
     with gzip.open(tmp, 'wt', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False)
     os.replace(tmp, path)                                       # 쓰는 도중 꺼져도 반쪽 파일이 남지 않게
     return path
+
+
+def is_done(path, photos):
+    """오늘 이미 받은 파일이면 True. 사진 없이 받은 파일은 '사진 포함' 요청에는 다시 받는다."""
+    if not os.path.exists(path):
+        return False
+    if not photos:
+        return True
+    try:
+        with gzip.open(path, 'rt', encoding='utf-8') as f:
+            return bool(json.load(f).get('photos'))
+    except (OSError, ValueError):
+        return False                                            # 깨진 파일은 다시 받는다
 
 
 def prune(out, keep, today):
@@ -66,7 +79,7 @@ def run(out, keep=30, photos=True, say=print, now=None, codes=None, ents=ENTS):
     url, tok, _me = R.login()
     stat = {'saved': 0, 'skipped_done': 0, 'empty': 0, 'failed': 0, 'bytes': 0}
     for ent in ents:
-        todo = [c for c in (codes or all_codes()) if not os.path.exists(os.path.join(day_dir, f'{ent}_{c}.json.gz'))]
+        todo = [c for c in (codes or all_codes()) if not is_done(os.path.join(day_dir, f'{ent}_{c}.json.gz'), photos)]
         stat['skipped_done'] += len(codes or all_codes()) - len(todo)
         for i in range(0, len(todo), CHUNK):
             part = todo[i:i + CHUNK]
@@ -83,7 +96,7 @@ def run(out, keep=30, photos=True, say=print, now=None, codes=None, ents=ENTS):
                 continue
             for code, one in zip(part, res):
                 if has_cells(one):
-                    p = save_one(day_dir, ent, code, one, now.strftime('%Y-%m-%d %H:%M:%S'))
+                    p = save_one(day_dir, ent, code, one, now.strftime('%Y-%m-%d %H:%M:%S'), photos)
                     stat['saved'] += 1
                     stat['bytes'] += os.path.getsize(p)
                 elif one and one.get('ok'):
