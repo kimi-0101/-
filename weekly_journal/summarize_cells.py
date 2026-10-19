@@ -103,6 +103,7 @@ def _meter(stdout, label='', secs=None):
             USAGE['calls'] += 1
         return stdout
     out_tok = int(us.get('output_tokens') or 0)
+    think_tok = int((us.get('output_tokens_details') or {}).get('thinking_tokens') or 0)
     with _ULOCK:                                                  # 영어·중국어를 동시에 부르므로 합산은 잠그고 한다
         USAGE['calls'] += 1
         USAGE['metered'] += 1
@@ -114,7 +115,7 @@ def _meter(stdout, label='', secs=None):
     if label:
         models = ','.join((d.get('modelUsage') or {}).keys()) or '?'
         sec = f'{secs:.0f}초 · ' if secs is not None else ''
-        print(f"   [호출] {getattr(_CTX, 'v', '')} {label} · {sec}출력 {out_tok:,}토큰 · 모델 {models}", flush=True)
+        print(f"   [호출] {getattr(_CTX, 'v', '')} {label} · {sec}출력 {out_tok:,}토큰(추론 {think_tok:,}) · 모델 {models}", flush=True)
     return text
 
 
@@ -133,8 +134,14 @@ def _claude_cmds(exe, model):
     os.makedirs(neutral, exist_ok=True)
     # 기본 시스템 프롬프트(코딩 도구용)도 쓰지 않고, 스킬 목록(--disable-slash-commands)·MCP 도구 설명(--strict-mcp-config)도 싣지 않는다.
     # 2026-10-19 실측: 한 줄짜리 호출도 입력이 약 4.95만 토큰이었는데 위 두 옵션으로 약 4천 토큰(1/12)으로 줄었다.
-    lean = (base + ['--system-prompt', LEAN_SYSTEM, '--disable-slash-commands', '--strict-mcp-config'], neutral)
-    return [lean, plain]                                                  # 가벼운 방식이 안 되면(구버전·신뢰 문제 등) 예전 방식으로 한 번 더
+    lean_flags = ['--system-prompt', LEAN_SYSTEM, '--disable-slash-commands', '--strict-mcp-config']
+    effort = os.environ.get('WJ_EFFORT', '')                              # 기본은 쓰지 않는다. 2026-10-19 실측: --effort low 는 추론 토큰이 거의 안 줄고(1,400 대 유지) 정리문이 원문 밖 평가를 더 붙여 검증 경고가 3→12건으로 늘었다. 시험하려면 WJ_EFFORT=low
+    tiers = []
+    if effort:
+        tiers.append((base + lean_flags + ['--effort', effort], neutral))
+    tiers.append((base + lean_flags, neutral))                            # --effort 를 모르는 버전이면 이 단계로
+    tiers.append(plain)                                                   # 그래도 안 되면(구버전·신뢰 문제 등) 예전 방식으로
+    return tiers
 
 
 def call_claude(prompt, model=None, timeout=300, label=''):
@@ -143,8 +150,6 @@ def call_claude(prompt, model=None, timeout=300, label=''):
     if not exe:
         raise RuntimeError('claude 명령을 찾지 못함 (PATH 확인)')
     env = dict(os.environ, PYTHONIOENCODING='utf-8', PYTHONUTF8='1')
-    if os.environ.get('WJ_THINKING', '0') != '1':
-        env['MAX_THINKING_TOKENS'] = '0'                             # 긴 '추론'은 출력 토큰·시간을 크게 늘린다. 정리·번역은 규칙이 정해져 있고 숫자 검사가 따로 있어 끈다 (되돌리려면 WJ_THINKING=1)
     model = model or os.environ.get('WJ_CLAUDE_MODEL') or None       # 예: WJ_CLAUDE_MODEL=sonnet
     tries = _claude_cmds(exe, model)
     for k, (cmd, cwd) in enumerate(tries):
@@ -170,21 +175,47 @@ def _gemini_key():
     return open(p, encoding='utf-8').read().strip() if os.path.exists(p) else ''
 
 
+_GEMINI_SEM = threading.Semaphore(int(os.environ.get('WJ_MAX_GEMINI', '2')))      # 무료 키는 분당 호출 수 제한이 작아서 동시에 2개까지만
+
+
 def call_gemini(prompt, timeout=120):
-    """번역용 Gemini 호출(무료 키). 키가 없거나 실패하면 예외 → 호출하는 쪽이 Claude 로 넘어간다."""
+    """Gemini 호출(무료 키). 키가 없거나 끝내 실패하면 RuntimeError → 호출하는 쪽이 정한다.
+    한도(429)·서버 오류(5xx)는 잠깐 쉬었다가 다시 부르고, 모델 이름이 없다고 하면(404) 별칭(gemini-flash-latest)으로 한 번 더 시도한다."""
+    import urllib.error
     import urllib.request
     key = _gemini_key()
     if not key:
         raise RuntimeError('gemini 키 없음')
-    model = os.environ.get('GEMINI_MODEL', GEMINI_MODEL)
-    url = f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'
+    models = [os.environ.get('GEMINI_MODEL', GEMINI_MODEL), 'gemini-flash-latest']
     body = json.dumps({'contents': [{'parts': [{'text': prompt}]}], 'generationConfig': {'temperature': 0, 'responseMimeType': 'application/json'}}).encode('utf-8')
-    req = urllib.request.Request(url, data=body, headers={'Content-Type': 'application/json', 'x-goog-api-key': key})
-    res = json.load(urllib.request.urlopen(req, timeout=timeout))
-    try:
-        return res['candidates'][0]['content']['parts'][0]['text']
-    except (KeyError, IndexError):
-        raise RuntimeError('gemini 응답 없음: ' + json.dumps(res, ensure_ascii=False)[:200])
+    last = None
+    mi, attempt = 0, 0
+    while mi < len(models) and attempt < 4:
+        url = f'https://generativelanguage.googleapis.com/v1beta/models/{models[mi]}:generateContent'
+        req = urllib.request.Request(url, data=body, headers={'Content-Type': 'application/json', 'x-goog-api-key': key})
+        try:
+            with _GEMINI_SEM:
+                res = json.load(urllib.request.urlopen(req, timeout=timeout))
+        except urllib.error.HTTPError as ex:
+            last = f'gemini HTTP {ex.code}'
+            if ex.code == 404 and mi + 1 < len(models):
+                mi += 1                                             # 모델 이름이 사라졌으면 별칭으로
+                continue
+            if ex.code in (429, 500, 502, 503, 504):
+                attempt += 1
+                time.sleep(GEMINI_RETRY_WAIT * attempt)             # 5초, 10초, 15초 … 로 늘리며 기다린다
+                continue
+            raise RuntimeError(last)
+        except (urllib.error.URLError, TimeoutError, OSError) as ex:
+            last = f'gemini 연결 실패: {ex!r}'
+            attempt += 1
+            time.sleep(GEMINI_RETRY_WAIT)
+            continue
+        try:
+            return res['candidates'][0]['content']['parts'][0]['text']
+        except (KeyError, IndexError):
+            raise RuntimeError('gemini 응답 없음: ' + json.dumps(res, ensure_ascii=False)[:200])
+    raise RuntimeError(last or 'gemini 호출 실패')
 
 
 def parse_json(txt):
@@ -237,6 +268,11 @@ def check_numbers(out, cells, quant_text):
 CHECK_PROMPT = """너는 영업일지 정리본의 사실 검증 담당이다. 아래 [원문]과 [정량]만 근거로 [정리본]의 각 문장을 검사한다.
 원문·정량에 직접 나오지 않는 내용(원문에 없는 범주·원인·평가·결론·범위 확대, 예: '모두', '전 채널', '~판매 부진'처럼 원문이 말하지 않은 표현)이 있는 문장만 찾아 JSON 배열로 답한다.
 숫자·고유명사가 같아도 의미를 바꾸거나 일반화하거나 이유를 덧붙였으면 문제로 본다. 문제가 없으면 [].
+[허용되는 것 — 문제로 보지 않는다]
+- 6번 '조치'는 그 부서의 6번·7번 글에서 '앞으로 할 일'을 가져와 쓰도록 되어 있다. 7번 향후전략의 내용을 6번 조치로 쓴 것은 오류가 아니다.
+- 원문의 말을 줄이거나 어순·문체(음슴체)를 바꾼 것, 영어·중국어 원문을 한글로 옮긴 것.
+- 한 줄에 같은 맥락의 문장을 합친 것(원문에 있는 내용이면).
+문제로 보는 것은 '원문에 없는 사실·숫자·이유·평가를 새로 넣었거나, 의미(주체·시제·범위)를 바꾼 것'뿐이다. 사소한 표현 차이는 지적하지 않는다.
 형식: [{"위치": "sec6/영업/결과/핵심", "문장": "...", "문제": "원문에 없는 ~", "원문근거": "가장 가까운 원문 구절 또는 없음"}]
 설명 없이 JSON 배열만."""
 

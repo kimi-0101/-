@@ -316,6 +316,62 @@ class Inc(unittest.TestCase):
         self.assertEqual(self.load()['display']['en']['sec6']['GM']['결과'][0], '손으로 다듬은 번역')
 
 
+class GeminiCall(unittest.TestCase):
+    def setUp(self):
+        import urllib.request, urllib.error
+        self.ur, self.ue = urllib.request, urllib.error
+        self.real_urlopen = urllib.request.urlopen
+        S.GEMINI_RETRY_WAIT = 0
+        os.environ['GEMINI_API_KEY'] = 'k'
+        self.urls = []
+
+    def tearDown(self):
+        self.ur.urlopen = self.real_urlopen
+        os.environ.pop('GEMINI_API_KEY', None)
+
+    def _resp(self, text):
+        import io
+        return io.BytesIO(json.dumps({'candidates': [{'content': {'parts': [{'text': text}]}}]}).encode('utf-8'))
+
+    def _http(self, code):
+        import io
+        return self.ue.HTTPError('u', code, 'err', {}, io.BytesIO(b'{}'))
+
+    def test_retries_on_429_then_succeeds(self):
+        seq = [self._http(429), self._http(503), None]
+        def fake(req, timeout=0):
+            self.urls.append(req.full_url)
+            e = seq.pop(0)
+            if e: raise e
+            return self._resp('{"ok":1}')
+        self.ur.urlopen = fake
+        self.assertEqual(S.call_gemini('p'), '{"ok":1}')
+        self.assertEqual(len(self.urls), 3)
+
+    def test_model_404_falls_back_to_alias(self):
+        def fake(req, timeout=0):
+            self.urls.append(req.full_url)
+            if 'gemini-flash-latest' not in req.full_url:
+                raise self._http(404)
+            return self._resp('{}')
+        self.ur.urlopen = fake
+        S.call_gemini('p')
+        self.assertIn('gemini-flash-latest', self.urls[-1])
+
+    def test_gives_up_with_runtime_error_and_other_http_errors_are_not_retried(self):
+        self.ur.urlopen = lambda req, timeout=0: (_ for _ in ()).throw(self._http(429))
+        with self.assertRaises(RuntimeError) as cm:
+            S.call_gemini('p')
+        self.assertIn('429', str(cm.exception))
+        n = []
+        def fake(req, timeout=0):
+            n.append(1); raise self._http(400)
+        self.ur.urlopen = fake
+        with self.assertRaises(RuntimeError):
+            S.call_gemini('p')
+        self.assertEqual(len(n), 1)
+
+
 class Tr(unittest.TestCase):
     KO = {'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['2단계 20% 확대']}}
     OK = json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['Stage 2, 20% expansion']}})
@@ -406,7 +462,7 @@ class Tr(unittest.TestCase):
         S.call_gemini = lambda p, timeout=120: json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['36.93m achieved, double-digit growth']}})
         self.assertTrue(S.translate_struct(ko, '영어'))
 
-    def test_per_call_log_line_and_thinking_off_and_model_env(self):
+    def test_per_call_log_line_and_model_env(self):
         import io, subprocess, shutil, contextlib
         envs = []
         class R:
@@ -424,7 +480,7 @@ class Tr(unittest.TestCase):
             subprocess.run, shutil.which = old_run, old_which
             os.environ.pop('WJ_CLAUDE_MODEL', None)
         self.assertIn('[호출]', buf.getvalue()); self.assertIn('요약 ·', buf.getvalue()); self.assertIn('출력 1,234토큰', buf.getvalue()); self.assertIn('claude-test-1', buf.getvalue())
-        self.assertEqual(envs[0][1]['MAX_THINKING_TOKENS'], '0')
+        self.assertNotEqual(envs[0][1].get('MAX_THINKING_TOKENS'), '0')                  # 추론 토큰 환경변수를 코드가 건드리지 않는다
         self.assertIn('sonnet', envs[0][0])
 
     def test_engine_switches_summarize_and_verify_to_gemini_without_claude(self):
@@ -456,8 +512,21 @@ class Tr(unittest.TestCase):
             self.assertEqual(S.call_claude('x'), 'done')
         finally:
             subprocess.run, shutil.which = old_run, old_which
-        self.assertIn('--system-prompt', cmds[0][0]); self.assertIn('--disable-slash-commands', cmds[0][0]); self.assertIn('--strict-mcp-config', cmds[0][0]); self.assertIsNotNone(cmds[0][1])
-        self.assertNotIn('--system-prompt', cmds[1][0]); self.assertIsNone(cmds[1][1])
+        c0 = cmds[0][0]
+        self.assertIn('--system-prompt', c0); self.assertIn('--disable-slash-commands', c0); self.assertIn('--strict-mcp-config', c0)
+        self.assertNotIn('--effort', c0)                                      # 기본은 effort 를 쓰지 않는다
+        self.assertIsNotNone(cmds[0][1])
+
+    def test_effort_is_opt_in_with_fallback_ladder(self):
+        os.environ['WJ_EFFORT'] = 'low'
+        try:
+            tiers = S._claude_cmds('claude', None)
+        finally:
+            os.environ.pop('WJ_EFFORT', None)
+        self.assertIn('--effort', tiers[0][0]); self.assertNotIn('--effort', tiers[1][0]); self.assertNotIn('--system-prompt', tiers[2][0])
+
+    def test_verifier_prompt_allows_sec7_content_in_sec6_action(self):
+        self.assertIn('7번 향후전략의 내용을 6번 조치로 쓴 것은 오류가 아니다', S.CHECK_PROMPT)
 
     def test_claude_limit_error_is_not_retried(self):
         import subprocess, shutil
