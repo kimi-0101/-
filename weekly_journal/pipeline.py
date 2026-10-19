@@ -116,6 +116,7 @@ def main(argv=None):
     ap.add_argument('--no-refresh', action='store_true', help='과거 주 ERP 재정렬(refresh_past_weeks.py)을 건너뛴다')
     ap.add_argument('--no-ledger', action='store_true', help='시작 전에 ERP 원장을 갱신하지 않는다')
     ap.add_argument('--no-verify', action='store_true', help='ERP 대조(주간·월간)를 건너뛴다')
+    ap.add_argument('--with-store', action='store_true', help='매장 탭(store_HK/TW)도 올린다 (기본은 올리지 않음)')
     ap.add_argument('--no-monthly', action='store_true', help='월간 화면(monthly_HK/TW)을 만들지 않는다')
     ap.add_argument('--week-archives', action='store_true', help='지난 주 SUMMARY(W1~)와 주차별 보관본도 올린다 (기본은 올리지 않음: 화면이 가볍고 반영이 빠르다)')
     ap.add_argument('--archive', choices=['auto', 'yes', 'no'], default='auto', help='주차별 보관본도 올린다 (auto: 최종(final)일 때만)')
@@ -173,6 +174,11 @@ def main(argv=None):
                                     out_dir=(a.out if a.dry_run else None), only=a.only)
             log('BEP 화면 생성 완료 — ' + ', '.join(f'{k} {len(v):,}자' for k, v in bpages.items()))
             pages.update(bpages)
+            if a.with_store:                       # 매장 탭은 개발 중이라 기본은 올리지 않는다 (Code.gs 에 store_ 이름 등록 후 --with-store)
+                stpages = g.generate_store(a.week, api_url=url, served=True, status=a.status, asof=asof,
+                                           out_dir=(a.out if a.dry_run else None), only=a.only)
+                log('매장 화면 생성 완료 — ' + ', '.join(f'{k} {len(v):,}자' for k, v in stpages.items()))
+                pages.update(stpages)
             smpages = g.generate_summary_months(a.week, api_url=url, served=True, status=a.status, asof=asof,
                                                 out_dir=(a.out if a.dry_run else None), only=a.only)
             swpages = {} if not a.week_archives else g.generate_summary_weeks(a.week, api_url=url, served=True, status=a.status, asof=asof,

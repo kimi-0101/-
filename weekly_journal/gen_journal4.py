@@ -257,7 +257,7 @@ td[data-pres]::before{content:attr(data-pres);position:absolute;top:2px;right:4p
 .rsn .rl{display:block;font-weight:700;font-size:12px;color:#374151;margin-bottom:2px}
 .rsn p{margin:0 0 2px;font-size:13px;line-height:1.7}
 .cmt{margin:0 0 16px}
-.cg{padding:12px 0;border-top:1px dashed #e5e7eb}
+.cg{padding:12px 0;border-top:1px solid #9ca3af}
 .cg:first-child{border-top:none;padding-top:0}
 .ct{align-self:start;font-size:12px;font-weight:700;background:#111;color:#fff;border-radius:12px;padding:2px 12px;text-align:center}
 .cg p{margin:0 0 6px;font-size:15px;line-height:1.9}
@@ -661,7 +661,127 @@ def _sum_tail(head, val, ent, week, live, leads, titles=None):
     sec7 = (f'<div class="sec">{head(7, t7[0], t7[1], badge)}{l7}<table class="t3">'
             + strat + row('GM', 'HQ 요청사항', 'ask') + '</table>'
             + '<script>' + SUMFILL_JS.replace('__API__', CFG.get('api_url') or '') + '</script></div>')
+    try:                                   # 승인된 정리본이 있으면 부서별 카드로 먼저 보여 주고 원문 표는 접는다 (없으면 기존 화면 그대로)
+        import summary_render as SR
+        _c = SR.cards(ent, week)
+        if _c:
+            sec5, sec6, sec7 = SR.merge(sec5, _c.get('5')), SR.merge(sec6, _c.get('6')), SR.merge(sec7, _c.get('7'))
+    except Exception as _ex:
+        print('[summary_render] 정리본 반영 건너뜀:', repr(_ex))
     return sec5, sec6, sec7
+
+
+_ANN_TOT = {}
+
+
+def _annual_total(ent, groups):
+    """올해 전체(연간) 목표 합 — ERP 월판매목표 원장, 폐점 매장 목표 포함 (연간 화면과 같은 값, 백만원 KRW). 법인별로 한 번만 계산"""
+    if ent not in _ANN_TOT:
+        _ANN_TOT[ent] = sum(annual_targets(ent, groups).values())
+    return _ANN_TOT[ent]
+
+
+def _ly_full(ent, n, yly, closed):
+    """전년 전체(1~12월) 매출(백만원). 마감된 달이면 '전년 누계(원장 값) + 남은 달(25년 월별 결산)', 아니면 25년 연간 결산 합"""
+    import json
+    import real_data as rd
+    a = json.load(open(os.path.join(rd.ROOT, 'monthly_sales.json'), encoding='utf-8'))['actuals_2025'][ent]
+    return (yly + sum(a[n:]) * 100) if (closed and n) else sum(a) * 100
+
+
+def full_year_row(ent, groups, ya, yly, n, closed=True):
+    """SUMMARY 1. 실적 맨 아래 '전체(연간)' 줄: 전체 목표 · 누계 매출 · 누계 달성률 · 부족 매출 · 전년 매출(전체) (오웬 요청 2026-10-16)"""
+    tt = _annual_total(ent, groups)
+    ach = ya / tt * 100 if tt else 0.0
+    short = max(tt - ya, 0.0)
+    ly = _ly_full(ent, n, yly, closed)
+
+    def tl(ko, en, zh, krw=None, txt=None):
+        val = f'<b data-loc="{krw * 1000 / CUR_FX:.4f}">{fmt(krw)}</b>' if krw is not None else f'<b>{txt}</b>'
+        return f'<div class="tile"><small>{B(ko, en, zh)}</small>{val}</div>'
+    return ('<div class="kp"><div class="kl">' + B('전체 (연간)', 'Full year', '全年') + '</div>'
+            + tl('전체 목표', 'Annual target', '全年目標', tt) + tl('누계 매출', 'YTD sales', '累計銷售額', ya)
+            + tl('누계 달성률', 'YTD achv.', '累計達成率', txt=f'{ach:.1f}%') + tl('부족 매출', 'Shortfall', '尚缺銷售額', short)
+            + tl('전년 매출(전체)', 'LY full-year sales', '去年全年銷售額', ly) + '</div>')
+
+
+FULL_NOTE = ('<div class="dn-note">' + B('전체 목표 = ERP 월판매목표 연간 합(폐점 매장 목표 포함), 부족 매출 = 전체 목표 − 누계 매출, 전년 매출(전체) = 2025년 1~12월 매출입니다.',
+                                          'Annual target = sum of ERP monthly sales targets for the year (incl. closed stores); shortfall = annual target − YTD sales; LY full-year = Jan to Dec 2025 sales.',
+                                          '全年目標＝ERP月銷售目標全年合計（含結束營業門市）；尚缺銷售額＝全年目標－累計銷售額；去年全年＝2025年1～12月銷售額。') + '</div>')
+
+
+_ANN_CH = {}
+_ONLINE_KW = ('ONLINE', 'HKTV', 'ZALORA', 'MOMO', 'SHOPEE', 'SHOPLINE', 'NATGEOHK', 'NATGEOSTORE', 'EC ')
+
+
+def _annual_by_channel(ent, groups):
+    """연간 목표를 오프라인/온라인으로 나눈다 (ERP 월판매목표 원장, 폐점 매장 목표 포함, 백만원). B2B·직원구매 등 '기타'는 뺀다"""
+    if ent not in _ANN_CH:
+        tgt = annual_targets(ent, groups)
+        off_n = {r[0] for g, rs in groups if g in ('백화점', '아울렛', '팝업') for r in rs}
+        on_n = {r[0] for g, rs in groups if g == '온라인' for r in rs}
+        res = {'off': 0.0, 'on': 0.0}
+        for k, v in tgt.items():
+            if k in off_n:
+                res['off'] += v
+            elif k in on_n:
+                res['on'] += v
+            elif k.endswith(' (폐점)'):
+                res['on' if any(x in k.upper() for x in _ONLINE_KW) else 'off'] += v
+        _ANN_CH[ent] = res
+    return _ANN_CH[ent]
+
+
+_LY_POS = {}
+
+
+def _ly_pos(ent, m_from):
+    """전년(2025) m_from~12월 오프라인·온라인 소매 매출(POS 원장, 결제금액+포인트, 백만원 KRW). 구분은 매장 구분표(dim_shop_channel)"""
+    key = (ent, m_from)
+    if key not in _LY_POS:
+        import real_data as rd
+        import db_wait
+        con = db_wait.connect_wait(os.path.join(rd.ROOT, 'erp_warehouse.duckdb'), read_only=True, max_wait_min=10, tag=' ly_pos')
+        try:
+            res = {'off': 0.0, 'on': 0.0}
+            for code in (['HK', 'MC'] if ent == 'HK' else ['TW']):
+                q = ("SELECT d.channel_kind, SUM(p.sil_amt + COALESCE(p.used_pnt, 0)) FROM fact_pos_ledger p JOIN dim_shop_channel d "
+                     "ON p.ent_code = d.ent_code AND p.shop_cd = d.shop_cd WHERE p.ent_code = ? AND p.sale_dt >= ? AND p.sale_dt <= DATE '2025-12-31' "
+                     "AND d.channel_kind IN ('offline_store', 'online_mall') GROUP BY 1")
+                for kind, v in con.execute(q, [code, f'2025-{m_from:02d}-01']).fetchall():
+                    res['off' if kind == 'offline_store' else 'on'] += (v or 0.0) * rd.FX[code] / 1e6
+        finally:
+            con.close()
+        _LY_POS[key] = res
+    return _LY_POS[key]
+
+
+def channel_full_text(ent, groups, kind, ya, yly, n, closed):
+    """유통별 실적(2) 맨 아래 문장: '오프라인/온라인 전체 목표는 ○, 목표 대비 ○ 달성, 부족 매출 ○, 전년 매출(전체) ○입니다' (오웬 요청 2026-10-16)"""
+    tt = _annual_by_channel(ent, groups)[kind]
+    pct = ya / tt * 100 if tt else 0.0
+    short = max(tt - ya, 0.0)
+    ly = yly + _ly_pos(ent, n + 1)[kind] if (closed and n) else _ly_pos(ent, 1)[kind]
+    tk, te, tz = ('오프라인', 'Offline', '線下') if kind == 'off' else ('온라인', 'Online', '線上')
+    return (f'{tk} 전체 목표는 {AK(tt, False)}, 목표 대비 {U(f"{pct:.1f}%")} 달성, 부족 매출 {U(AK(short, False))}, 전년 매출(전체) {AK(ly, False)}입니다.',
+            f'{te} full-year target is {AK(tt, True)}, {U(f"{pct:.1f}%")} achieved, shortfall {U(AK(short, True))}, LY full-year sales {AK(ly, True)}.',
+            f'{tz}全年目標為 {AK(tt, "zh")}，達成率 {U(f"{pct:.1f}%")}，尚缺銷售額 {U(AK(short, "zh"))}，去年全年銷售額 {AK(ly, "zh")}。')
+
+
+def _avg_bp(tk, te, tz, per_ko, per_en, per_zh, m_now, m_ly, y_now, y_ly):
+    """유통별 실적(2) 가운데 '점평균' 블록의 한 줄: 점평균 매출 = 매출 ÷ 그 기간에 매출이 있는 매장 수 (올해·전년 각각의 매장 수로 나눠 매장 수 변화의 영향을 뺀다)"""
+    mp = (m_now / m_ly - 1) * 100 if m_ly else 0.0
+    yp = (y_now / y_ly - 1) * 100 if y_ly else 0.0
+    return BP(f'{tk} {per_ko} 점평균 매출은 {U(AK(m_now, False))}(전년 {AK(m_ly, False)} 대비 {U(f"{mp:+.1f}%")}), 누계 점평균은 {U(AK(y_now, False))}(전년 {AK(y_ly, False)} 대비 {U(f"{yp:+.1f}%")})입니다.',
+              f'{te} average sales per store {per_en}: {U(AK(m_now, True))} ({U(f"{mp:+.1f}%")} vs LY {AK(m_ly, True)}); YTD average {U(AK(y_now, True))} ({U(f"{yp:+.1f}%")} vs LY {AK(y_ly, True)}).',
+              zh=f'{tz}{per_zh}平均單店銷售額為 {U(AK(m_now, "zh"))}（與去年 {AK(m_ly, "zh")} 相比 {U(f"{mp:+.1f}%")}），累計平均單店 {U(AK(y_now, "zh"))}（與去年 {AK(y_ly, "zh")} 相比 {U(f"{yp:+.1f}%")}）。')
+
+
+def _full_bp(ent, groups, kind, ya, yly, n, brand):
+    if brand not in (None, 'ALL'):
+        return ''
+    k, e, z = channel_full_text(ent, groups, kind, ya, yly, n, False)
+    return BP(k, e, zh=z)
 
 
 def make_summary(ent, data, groups, weeks_meta, tx, brand='ALL', part='all'):
@@ -681,6 +801,7 @@ def make_summary(ent, data, groups, weeks_meta, tx, brand='ALL', part='all'):
     tot = sums(list(w.values()))
     import real_data as _rd1
     _wk1 = int(mm.group(3))
+    _wk_n = int(d1.split('/')[0])
     _wls1 = _rd1.WLY_STORE.get(ent, {}).get(_wk1, {})
     wl = {g: sum((_wls1.get(r[0]) or 0.0) for r in rows) for g, rows in groups if g != '기타'}
     wl['기타'] = ((_wls1.get('기타') or 0.0) if brand == 'ALL' else (_rd1.WLY_OTHER.get(ent, {}).get(_wk1, {}).get(brand) or 0.0))
@@ -727,8 +848,9 @@ def make_summary(ent, data, groups, weeks_meta, tx, brand='ALL', part='all'):
            + tile('', '누계 목표', 'YTD target', yt) + tile('', '누계 매출', 'YTD sales', ya)
            + tile('', '누계 달성률', 'YTD achv.', txt=f'{yach:.1f}%') + tile('', '전년 매출', 'LY sales', yly)
            + tile('', '전년비', 'YoY %', txt=f'{yoy:+.1f}%') + '</div>')
+    kp3 = full_year_row(ent, groups, ya, yly, int(d1.split('/')[0]), closed=False) if brand in (None, 'ALL') else ''
     sec1 = (f'<div class="sec">{head(1, "실적", "Results", "real")}<div class="dn-note" style="margin:-6px 0 8px">{unit}</div>'
-            f'{BP(ko1[0], en1[0], zh=zh1[0])}{BP(ko1[1], en1[1], zh=zh1[1])}<div class="tiles">{kp1}{kp2}</div></div>')
+            f'{BP(ko1[0], en1[0], zh=zh1[0])}{BP(ko1[1], en1[1], zh=zh1[1])}<div class="tiles">{kp1}{kp2}{kp3}</div>{FULL_NOTE if kp3 else ""}</div>')
 
     # 2. 유통별 실적
     import real_data as _rd0
@@ -786,17 +908,22 @@ def make_summary(ent, data, groups, weeks_meta, tx, brand='ALL', part='all'):
     yavg_ly = off[5] / n25 if n25 else 0.0
     avg_pct = (avg_now / avg_ly - 1) * 100 if avg_ly else 0.0
     yavg_pct = (yavg_now / yavg_ly - 1) * 100 if yavg_ly else 0.0
-    off_ko = (off_ko[0] + f' 점평균 매출은 {U(AK(avg_now, False))}, 전년 {AK(avg_ly, False)} 대비 {U(f"{avg_pct:+.1f}%")}입니다.',
-              off_ko[1] + f' 점평균 매출은 {U(AK(yavg_now, False))}, 전년 {AK(yavg_ly, False)} 대비 {U(f"{yavg_pct:+.1f}%")}입니다.')
-    off_en = (off_en[0] + f' Average sales per store were {U(AK(avg_now, True))}, {U(f"{avg_pct:+.1f}%")} vs the LY average of {AK(avg_ly, True)}.',
-              off_en[1] + f' Average sales per store are {U(AK(yavg_now, True))}, {U(f"{yavg_pct:+.1f}%")} vs the LY average of {AK(yavg_ly, True)}.')
-    off_zh = (off_zh[0] + f' 平均單店銷售額為 {U(AK(avg_now, "zh"))}，與去年 {AK(avg_ly, "zh")} 相比 {U(f"{avg_pct:+.1f}%")}。',
-              off_zh[1] + f' 平均單店銷售額為 {U(AK(yavg_now, "zh"))}，與去年 {AK(yavg_ly, "zh")} 相比 {U(f"{yavg_pct:+.1f}%")}。')
     on_ko, on_en, on_zh = chan_sents(gsum.get('온라인', (0.0,) * 6), g_wly['온라인'], '온라인', 'Online', '線上')
+    _on = gsum.get('온라인', (0.0,) * 6)
+    _on_rows = dict(groups).get('온라인', [])
+    o_cnt = sum(1 for r in _on_rows if not _closed(r[0]) and w[r[0]][1] > 0)
+    o_n26, o_n25 = yc.get('온라인', [0, 0])[0], yc.get('온라인', [0, 0])[1]
+    o_ly = ly_c.get('온라인', 0)
+    oa_now = _on[1] / o_cnt if o_cnt else 0.0
+    oa_ly = g_wly['온라인'] / o_ly if o_ly else 0.0
+    oy_now = _on[4] / o_n26 if o_n26 else 0.0
+    oy_ly = _on[5] / o_n25 if o_n25 else 0.0
+    oa_pct = (oa_now / oa_ly - 1) * 100 if oa_ly else 0.0
+    oy_pct = (oy_now / oy_ly - 1) * 100 if oy_ly else 0.0
     cmt = ('<div class="cmt"><div class="cg"><div>'
-           + BP(off_ko[0], off_en[0], zh=off_zh[0]) + BP(off_ko[1], off_en[1], zh=off_zh[1]) + '</div></div>'
+           + BP(off_ko[0], off_en[0], zh=off_zh[0]) + BP(off_ko[1], off_en[1], zh=off_zh[1]) + _full_bp(ent, groups, 'off', off[4], off[5], _wk_n, brand) + '</div></div>' + '<div class="cg"><div>' + _avg_bp('오프라인', 'Offline', '線下', '이번 주', 'this week', '本週', avg_now, avg_ly, yavg_now, yavg_ly) + _avg_bp('온라인', 'Online', '線上', '이번 주', 'this week', '本週', oa_now, oa_ly, oy_now, oy_ly) + '</div></div>'
            '<div class="cg"><div>'
-           + BP(on_ko[0], on_en[0], zh=on_zh[0]) + BP(on_ko[1], on_en[1], zh=on_zh[1]) + '</div></div></div>')
+           + BP(on_ko[0], on_en[0], zh=on_zh[0]) + BP(on_ko[1], on_en[1], zh=on_zh[1]) + _full_bp(ent, groups, 'on', gsum.get('온라인', (0,) * 6)[4], gsum.get('온라인', (0,) * 6)[5], _wk_n, brand) + '</div></div></div>')
     sec2 = (f'<div class="sec">{head(2, "유통별 실적", "Results by Channel", "real")}<div class="dn-note" style="margin:-6px 0 8px">{unit}</div>'
             f'{cmt}<table class="t2">{thead}{rows2}</table><div class="dn-note">{note2}</div></div>')
 
@@ -1176,8 +1303,10 @@ def make_summary_period(ent, data, groups, meta, per, parts=False, brand=None):
     kp += ('<div class="kp"><div class="kl">' + B(f'누계 ({asof})', f'YTD ({asof})') + '</div>'
            + tile('누계 목표', 'YTD target', yt) + tile('누계 매출', 'YTD sales', ya) + tile('누계 달성률', 'YTD achv.', txt=f'{yach:.1f}%')
            + tile('전년 매출', 'LY sales', yly) + tile('전년비', 'YoY %', txt=f'{yoy:+.1f}%') + '</div>')
+    if brand in (None, 'ALL'):
+        kp += full_year_row(ent, groups, ya, yly, n, closed)
     sec1 = (f'<div class="sec">{head(1, "실적", "Results")}<div class="dn-note" style="margin:-6px 0 8px">{unit}</div>'
-            + ''.join(BP(k, e, zh=z) for k, e, z in s1) + f'<div class="tiles">{kp}</div></div>')
+            + ''.join(BP(k, e, zh=z) for k, e, z in s1) + f'<div class="tiles">{kp}</div>{FULL_NOTE if brand in (None, "ALL") else ""}</div>')
 
     # ---- 2. 유통별 실적
     def cnt_now(rows):
@@ -1209,7 +1338,7 @@ def make_summary_period(ent, data, groups, meta, per, parts=False, brand=None):
     per_en = 'this week' if wk_ else f'in {MON_EN[n - 1] if n else ""}'
     per_zh = '本週' if wk_ else f'{n}月'
 
-    def ch(v, tag_ko, tag_en, tag_zh):
+    def ch(v, tag_ko, tag_en, tag_zh, kind=None, rows_=None):
         t_, a_, ly_, yt_, ya_, yly_ = v
         a1 = a_ / t_ * 100 if t_ else 0.0
         y1 = (a_ / ly_ - 1) * 100 if ly_ else 0.0
@@ -1223,10 +1352,26 @@ def make_summary_period(ent, data, groups, meta, per, parts=False, brand=None):
         out.append((f'{tag_ko} 누계 매출은 {U(AK(ya_, False))}, 목표 대비 {U(f"{a2:.1f}%")} 달성, 전년 매출 {AK(yly_, False)} 대비 {U(f"{y2:+.1f}%")}입니다.',
                     f'{tag_en} YTD sales are {U(AK(ya_, True))}, {U(f"{a2:.1f}%")} of target and {U(f"{y2:+.1f}%")} vs LY sales of {AK(yly_, True)}.',
                     f'{tag_zh}累計銷售額為 {U(AK(ya_, "zh"))}，達成率 {U(f"{a2:.1f}%")}，與去年銷售額 {AK(yly_, "zh")} 相比 {U(f"{y2:+.1f}%")}。'))
-        return out
+        pairs = []
+        if rows_ is not None:                          # 점평균 값 쌍 (월간 · 누계). 문장은 가운데 '점평균' 블록에서 만든다
+            cn = {i: len([r for r in rows_ if w[r[0]][i] > 0]) for i in (1, 2, 4, 5)}
+            pairs = [(a_ / cn[1] if cn[1] else 0.0, ly_ / cn[2] if cn[2] else 0.0)] if mon else [(0.0, 0.0)]
+            pairs.append((ya_ / cn[4] if cn[4] else 0.0, yly_ / cn[5] if cn[5] else 0.0))
+        if kind and brand in (None, 'ALL'):
+            out.append(channel_full_text(ent, groups, kind, ya_, yly_, n, closed))
+        return out, pairs
     cmt = '<div class="cmt">'
-    for v, tk, te, tz in ((off, '오프라인', 'Offline', '線下'), (gsum.get('온라인', (0,) * 6), '온라인', 'Online', '線上')):
-        cmt += '<div class="cg"><div>' + ''.join(BP(k, e, zh=z) for k, e, z in ch(v, tk, te, tz)) + '</div></div>'
+    _off_rows = [r for g, rs in groups if g in off_g for r in rs]
+    _on_rows = [r for g, rs in groups if g == '온라인' for r in rs]
+    _res = [(ch(v, tk, te, tz, kd, rr), tk, te, tz) for v, tk, te, tz, kd, rr in ((off, '오프라인', 'Offline', '線下', 'off', _off_rows), (gsum.get('온라인', (0,) * 6), '온라인', 'Online', '線上', 'on', _on_rows))]
+    _avgs = ''.join(_avg_bp(tk, te, tz, per_ko, per_en, per_zh, pr[0][0], pr[0][1], pr[1][0], pr[1][1]) if mon else
+                    BP(f'{tk} 누계 점평균 매출은 {U(AK(pr[1][0], False))}(전년 {AK(pr[1][1], False)} 대비 {U(f"{((pr[1][0] / pr[1][1] - 1) * 100 if pr[1][1] else 0.0):+.1f}%")})입니다.',
+                       f'{te} YTD average sales per store: {U(AK(pr[1][0], True))} ({U(f"{((pr[1][0] / pr[1][1] - 1) * 100 if pr[1][1] else 0.0):+.1f}%")} vs LY {AK(pr[1][1], True)}).',
+                       zh=f'{tz}累計平均單店銷售額為 {U(AK(pr[1][0], "zh"))}（與去年 {AK(pr[1][1], "zh")} 相比 {U(f"{((pr[1][0] / pr[1][1] - 1) * 100 if pr[1][1] else 0.0):+.1f}%")}）。')
+                    for (_o, pr), tk, te, tz in _res)
+    cmt += ('<div class="cg"><div>' + ''.join(BP(k, e, zh=z) for k, e, z in _res[0][0][0]) + '</div></div>'
+            '<div class="cg"><div>' + _avgs + '</div></div>'
+            '<div class="cg"><div>' + ''.join(BP(k, e, zh=z) for k, e, z in _res[1][0][0]) + '</div></div>')
     cmt += '</div>'
     note2 = BP('유통별 실적에는 폐점 매장의 실적도 해당 유통에 포함됩니다. 매장수는 표에서 해당 기간에 매출이 있는 매장(폐점 표시 매장 포함) 수이고, 전년 동기 대비는 전년 같은 기간에 매출이 있었던 매장 수와의 차이입니다. 모든 숫자는 ERP 일별 원장(최신 조회값)에서 계산했습니다.',
                'Channel results include closed stores in their channel. Store counts are the stores in the table with sales in the period (closed stores included); the LY comparison uses stores that had sales in the same period last year. All figures are calculated from the ERP daily ledger (latest values).', 'div')
@@ -1251,11 +1396,11 @@ def make_summary_period(ent, data, groups, meta, per, parts=False, brand=None):
                f'上月有銷售的 {len(momv)} 家中有 {U(f"{n_mom} 家")}較上月成長。')
         ak = lambda x: x[1][1] / x[1][0]
         panels = (_panel_kind('&#9650; ' + B('달성률 상위 (월간)', 'Top achievement (monthly)'), sorted(tgt, key=lambda x: -ak(x))[:10], 'ach')
-                  + _panel_kind('&#9650; ' + B('전월 대비 증가', 'Largest MoM increase'), sorted([x for x in momv if x[1][1] > x[1][2]], key=lambda x: -(x[1][1] / x[1][2]))[:10], 'mom')
                   + _panel_kind('&#9650; ' + B('전년 동월 대비 증가', 'Highest YoY growth (month)'), sorted([x for x in lyl if x[1][1] > x[1][2]], key=lambda x: -(x[1][1] / x[1][2]))[:10], 'mly')
+                  + _panel_kind('&#9650; ' + B('전월 대비 증가', 'Largest MoM increase'), sorted([x for x in momv if x[1][1] > x[1][2]], key=lambda x: -(x[1][1] / x[1][2]))[:10], 'mom')
                   + _panel_kind('&#9660; ' + B('달성률 하위 (월간)', 'Lowest achievement (monthly)'), sorted(tgt, key=ak)[:10], 'ach')
-                  + _panel_kind('&#9660; ' + B('전월 대비 감소', 'Largest MoM decrease'), sorted([x for x in momv if x[1][1] < x[1][2]], key=lambda x: x[1][1] / x[1][2])[:10], 'mom')
-                  + _panel_kind('&#9660; ' + B('전년 동월 대비 감소', 'Largest YoY decline (month)'), sorted([x for x in lyl if x[1][1] < x[1][2]], key=lambda x: x[1][1] / x[1][2])[:10], 'mly'))
+                  + _panel_kind('&#9660; ' + B('전년 동월 대비 감소', 'Largest YoY decline (month)'), sorted([x for x in lyl if x[1][1] < x[1][2]], key=lambda x: x[1][1] / x[1][2])[:10], 'mly')
+                  + _panel_kind('&#9660; ' + B('전월 대비 감소', 'Largest MoM decrease'), sorted([x for x in momv if x[1][1] < x[1][2]], key=lambda x: x[1][1] / x[1][2])[:10], 'mom'))
         note3 = BP('달성률은 월 목표가 있는 전 매장, 전월 대비는 전월 매출이 있는 전 매장, 전년 동월 대비는 전년 같은 달에 매출이 있었던 매장 기준입니다(신규·폐점 매장은 비교 대상이 있을 때만 포함).',
                    'Achievement covers every store with a monthly target, MoM covers stores with sales last month, and YoY covers stores with sales in the same month last year (new and closed stores only when a comparison base exists).', 'div')
     else:
@@ -1469,7 +1614,7 @@ if(g&&b){g.addEventListener('click',function(e){b.hidden=!b.hidden;g.setAttribut
 
 
 _PAGE = {('journal', 'w'): 'journal', ('journal', 'm'): 'monthly', ('journal', 'y'): 'yearly',
-         ('summary', 'w'): 'summary', ('summary', 'm'): 'msummary', ('summary', 'y'): 'ysummary', ('bep', 'm'): 'bep', ('store', 'm'): 'store'}
+         ('summary', 'w'): 'summary', ('summary', 'm'): 'msummary', ('summary', 'y'): 'ysummary', ('bep', 'm'): 'bep', ('store', 'm'): 'store', ('sheet', 'm'): 'sheet'}
 
 
 def _href(ent, kind, per, sfx=''):
@@ -1477,7 +1622,7 @@ def _href(ent, kind, per, sfx=''):
     if CFG['served']:
         return f'href="#" data-go="{name}_{ent}{sfx if per == "w" else ""}"'
     fname = {'journal': 'weekly_journal', 'monthly': 'weekly_monthly', 'yearly': 'weekly_yearly',
-             'summary': 'weekly_summary', 'msummary': 'weekly_msummary', 'ysummary': 'weekly_ysummary', 'bep': 'weekly_bep', 'store': 'weekly_store'}[name]
+             'summary': 'weekly_summary', 'msummary': 'weekly_msummary', 'ysummary': 'weekly_ysummary', 'bep': 'weekly_bep', 'store': 'weekly_store', 'sheet': 'weekly_sheet'}[name]
     return f'href="{fname}_{ent}.html"'
 
 
@@ -1486,6 +1631,8 @@ def _tabper(active):
         return 'bep', 'm'
     if active == 'store':
         return 'store', 'm'
+    if active == 'sheet':
+        return 'sheet', 'm'
     tab = 'summary' if active in ('summary', 'msummary', 'ysummary') else 'journal'
     per = 'm' if active in ('monthly', 'msummary') else ('y' if active in ('yearly', 'ysummary') else 'w')
     return tab, per
@@ -1530,11 +1677,11 @@ def head_block(ent, kind, per, tabs='', acts=False, selkind=None, opts=None, bra
     nav = f'<div class="tabs nav">{nav_html(ent, kind)}</div>'
     sel = period_select(ent, selkind or kind, opts or [])
     tb = f'<div class="tabs" id="tabs" hidden>{tabs}</div>' if tabs else ''
-    g_per = '' if kind in ('bep', 'store') else f'<div class="hg"><span class="gl">{L("기간")}</span><div class="tabs per">{period_links(ent, per, _tabper(kind)[0])}</div>{sel}{tb}</div>'
+    g_per = '' if kind in ('bep', 'store', 'sheet') else f'<div class="hg"><span class="gl">{L("기간")}</span><div class="tabs per">{period_links(ent, per, _tabper(kind)[0])}</div>{sel}{tb}</div>'
     if kind == 'bep':
         g_per = (f'<div class="hg"><span class="gl">{L("기간")}</span><div class="tabs per"><a class="on">{L("월간")}</a></div>'
                  + BEP_SEL + '</div>')
-    if kind == 'store':
+    if kind in ('store', 'sheet'):
         g_per = ''
     fx = (f'<span class="pop"><button type="button" class="gear" id="fxgear" aria-expanded="false" aria-label="Exchange rate">&#9881;</button>'
           f'<div class="fxbox panelbox" id="fxbox" hidden><span class="ko">적용환율</span><span class="en">Rate</span><span class="zh">適用匯率</span> 1 {lc} = '
@@ -1558,6 +1705,8 @@ def head_block(ent, kind, per, tabs='', acts=False, selkind=None, opts=None, bra
     if kind == 'store':                 # 매장 화면: 통화 버튼은 언어 옆(부모 화면)에 두고, 안쪽 화면(iframe)을 조작한다
         g_cur = (f'<div class="hg"><span class="gl">{L("통화")}</span><div class="tabs cur" id="stCur"><button class="on" data-c="KRW" type="button">KRW</button>'
                  f'<button data-c="LOC" type="button">{lc}</button></div></div>')
+    if kind == 'sheet':                 # 한판자료: 양식만 (통화 전환 없음)
+        g_cur = ''
     g_lang = ('<div class="hg"><span class="gl">' + L("언어") + '</span><div class="tabs lang" id="lang"><button class="on" data-l="ko">한글</button>'
               '<button data-l="en">EN</button><button data-l="zh">繁中</button></div></div>')
     g_act = ''
@@ -1578,7 +1727,7 @@ def nav_html(ent, active):
     return (f'<a {_href(ent, "summary", per, sfx)} class="{"on" if tab == "summary" else ""}">SUMMARY</a>'
             f'<a {_href(ent, "journal", per, sfx)} class="{"on" if tab == "journal" else ""}">{L("상세 일지")}</a>'
             f'<a {_href(ent, "bep", "m")} class="{"on" if tab == "bep" else ""}">BEP</a>'
-            f'<a {_href(ent, "store", "m")} class="{"on" if tab == "store" else ""}">{L("매장")}</a>')
+            f'<a {_href(ent, "store", "m")} class="{"on" if tab == "store" else ""}">{L("매장")}</a>')   # 한판자료 탭은 일단 숨김(페이지 생성은 유지)
 
 
 # 파이프라인 설정 (generate() 가 채운다)
@@ -2692,6 +2841,7 @@ def store_page(ent):
         t = io.open(STORE_TPL, encoding='utf-8').read()
         data = io.open(jp, encoding='utf-8').read()
         t = t.replace('__DATA__', data)
+        t = t.replace('__SHEET__', '')
         a = t.index('<div class="hd">')
         b = t.index('<div class="bar" id="bar">')
         t = t[:a] + t[b:]
@@ -2734,6 +2884,152 @@ def generate_store(latest, api_url='', served=False, status='final', asof=None, 
         if only and ent not in only:
             continue
         out['store_' + ent] = store_page(ent)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+        for name, html in out.items():
+            kind, ent = name.split('_')
+            with open(os.path.join(out_dir, f'weekly_{kind}_{ent}.html'), 'w', encoding='utf-8') as f:
+                f.write(html)
+    return out
+
+
+# ── 한판자료 (2026-10-15): 본사 작성지시 양식(월별 매출 현황 · 매장별 현황 분석)의 모양만 만든 화면. 숫자는 비어 있다.
+_SH1_HK = [('오프라인', 'NG', '아울렛', 'Citygate Outlet'), ('오프라인', 'NG', '쇼핑몰', 'Harbour City'), ('오프라인', 'NG', '쇼핑몰', 'Yoho Mall'),
+           ('오프라인', 'NG', '쇼핑몰', 'New Town Plaza'), ('오프라인', 'NG', '쇼핑몰', 'APM'), ('오프라인', 'NG', '로드샵', 'Hollywood MK'),
+           ('오프라인', 'NG', '쇼핑몰', 'Kai Tak'), ('오프라인', 'NG', '쇼핑몰', 'Venetian'), ('오프라인', 'NG', '쇼핑몰', 'Londoner'),
+           ('온라인', 'NG', '온라인', '(Online) NatgeoHK'), ('온라인', 'NG', '온라인', 'HKTVmall'), ('온라인', 'MG', '온라인', '(Online) MarkGonzales_HK'),
+           ('폐점', 'NG', '폐점', 'K11 Musea'), ('폐점', 'MG', '폐점', 'K11 Musea (MG)'), ('폐점', 'NG', '폐점', 'Macau Shilla DFS'),
+           ('폐점', 'NG', '폐점', 'Mong Kok Station'), ('폐점', 'NG', '폐점', 'New Town Plaza (Closure)'), ('폐점', 'NG', '폐점', 'Times Square'),
+           ('폐점', 'NG', '폐점', 'Zalora'), ('기타', 'NG', '기타', 'Pop-up 1'), ('기타', 'NG', '기타', 'Natgeo B2B')]
+_SH1_TW = [('아울렛', 'M-F-GLORIA OUTLET', 'MG'), ('아울렛', 'N-MOP TCH', 'NG'), ('아울렛', 'N-MOP LINKOU', 'NG'), ('쇼핑몰', 'N-SKM TCH', 'NG'),
+           ('쇼핑몰', 'N-MITSUI LLP NG', 'NG'), ('쇼핑몰', 'N-HS ARENA', 'NG'), ('쇼핑몰', 'M-HS TCH', 'MG'), ('쇼핑몰', 'N-FE BIG CITY', 'NG'),
+           ('쇼핑몰', 'N-HS TCH', 'NG'), ('쇼핑몰', 'M-SKM NX', 'MG'), ('백화점', 'N-SOGO ZX', 'NG'), ('쇼핑몰', 'M-HS ARENA', 'MG'),
+           ('쇼핑몰', 'N-MITSUI LLP TCH', 'NG'), ('쇼핑몰', 'N-F-SKM PARK KHS', 'NG'), ('쇼핑몰', 'M-MITSUI LLP NG', 'MG'), ('쇼핑몰', 'N-SKM TN XM', 'NG'),
+           ('아울렛', 'M-MOP TCH popup', 'MG'), ('쇼핑몰', 'N-SKM TN XBM', 'NG'), ('쇼핑몰', 'M-SKM TN XBM', 'MG'), ('쇼핑몰', 'M-SKM TN XM', 'MG'),
+           ('쇼핑몰', 'N-CMP PARKLANE', 'NG'), ('온라인', 'M-EC MOMO', 'MG'), ('온라인', 'M-EC Shopline', 'MG'), ('기타', 'MG EMPLOYEE PURCHASE', 'MG'),
+           ('기타', 'M-B2B', 'MG'), ('기타', 'N-B2B', 'NG'), ('기타', 'NGA PR', 'NG'), ('온라인', 'N-EC MOMO', 'NG'), ('온라인', 'N-EC Shopee', 'NG'),
+           ('온라인', 'N-EC Shopline', 'NG'), ('기타', 'N-Employee Purchase', 'NG'), ('백화점', 'N-F-SOGO ZX', 'NG'), ('백화점', 'M-F-SOGO ZX', 'MG'),
+           ('쇼핑몰', 'N-SKM NX', 'NG'), ('폐점', 'N-VIESHOW XINYI', 'NG'), ('폐점', 'M-F-SKM PARK KHS', 'MG'), ('폐점', 'N-F-GLOBAL MALL', 'NG')]
+_SH2_STORES = {
+    'HK': ['Hollywood MK', 'APM', 'Yoho Mall', 'Citygate Outlet', 'Harbour City', 'New Town Plaza', 'Kai Tak', 'VENETIAN', 'LONDONER', 'Mong Kok Station',
+           'Time Square', 'K11 Musea (NG)', 'K11 Musea (MG)', 'Online_NatgeoHK', 'Online_HKTVMall', 'Online_Zalora', 'Online_Mark Gonzales HK',
+           '소계1 (폐점 예정 제외)', '소계2 (폐점 예정)', '온라인', 'OFFICE (온라인 포함)', '총합계'],
+    'TW': [x[1] for x in _SH1_TW]}
+_SH2_COMP = {'HK': ['NGA', 'TNF', 'AGLE', 'MLB', 'FILA'],
+             'TW': ['자사 (NGA/MG)', 'TNF', 'MLB', 'ADIDAS', 'AAPE', 'NIKE', 'NEW BALANCE', 'NB 1906', 'PORTER', 'SPORT B', 'TIMBERLAND', 'AIGLE', 'COLUMBIA', 'FILA',
+                    'MFG', 'PUMA', 'TOMMY HILFIGER', 'MATIN KIM', 'NIKE KICKS LOUNGE', 'ADIDAS OG', 'WACKY WILLY', 'CALVIN KLEIN', 'COVERNAT', 'DISCOVERY', 'EPT',
+                    'GRANIPH', 'HOKA', 'MAMMUT', 'MARDI', 'NONSPECE', 'ROOTS', 'TOMMY JEANS', 'ALLSAINT', "ARC'TERYX", 'CALVIN KLEIN JEANS', 'CC', 'CONVERSE',
+                    'DESCENTE', 'EVISU', 'FREETIMEGEAR', 'HELLY HANSEN', 'I.T', 'LEVIS', 'POLO', 'SATUR', 'SNOW PEAK']}
+SHEET_CSS = ('.shp{padding:0 18px 40px}.shh{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:18px 0 6px}.shh h2{margin:0;font-size:16px}.shh small{color:#6b7280;font-size:11.5px}'
+             '.shw{overflow-x:auto;border:1px solid #cfd4dc;border-radius:6px;margin-bottom:8px}.sht{border-collapse:separate;border-spacing:0;font-size:11px;font-variant-numeric:tabular-nums}'
+             '.sht th,.sht td{border-right:1px solid #cfd4dc;border-bottom:1px solid #cfd4dc;padding:3px 6px;background:#fff;white-space:nowrap;min-width:58px;height:22px;text-align:right}'
+             '.sht thead th{background:#f0f1f3;color:#4b5563;font-weight:500;text-align:center}.sht thead th.mo{background:#6b7280;color:#fff;font-weight:600}'
+             '.sht th.lb,.sht td.lb{position:sticky;left:0;z-index:2;background:#f0f1f3;text-align:left;font-weight:500;min-width:150px;border-right:2px solid #9ca3af}'
+             '.sht td.i{text-align:left;color:#374151;min-width:70px}.sht tr.sec td{background:#111;color:#fff;font-weight:600;text-align:left}.sht tr.sec td.lb{background:#111}'
+             '.sht tr.tt td{background:#fafafa;font-weight:700}.sht tr.g td.lb{background:#e5e7eb;font-weight:600}.sht tr.g td{background:#f3f4f6}'
+             '.sht td.pc{color:#9ca3af;font-size:10px}.shn{font-size:11.5px;color:#6b7280;margin:4px 2px 0}.sht tr.sub td.lb{padding-left:22px;font-weight:400}')
+
+
+def _sh_s1(ent):
+    import html as _h
+    months = 10 if ent == 'HK' else 9
+    mo = ''.join(f'<th class="mo" colspan="5">{m}{L("월") if False else "월"}</th>' for m in range(1, months + 1))
+    sub = ''.join('<th>목표</th><th>매출</th><th>달성률</th><th>전년</th><th>증감률</th>' for _ in range(months))
+    info_cols = ['형태', '지역', '계약형태', '계약기간', '매장평수', '임대료/수수료', '직원수(n+1)']
+    ncell = months * 5
+    head = (f'<thead><tr><th class="lb" rowspan="2">{"브랜드 · 형태 · 매장" if ent == "HK" else "형태 · 매장 · 브랜드"}</th>'
+            + ''.join(f'<th rowspan="2">{c}</th>' for c in info_cols) + mo + '</tr><tr>' + sub + '</tr></thead>')
+    e = '<td></td>'
+    body = f'<tr class="tt"><td class="lb">합계 (KRW)</td>' + '<td></td>' * len(info_cols) + e * ncell + '</tr>'
+    last = None
+    if ent == 'HK':
+        for grp, br, fm, st in _SH1_HK:
+            if grp != last:
+                body += f'<tr class="g"><td class="lb">{grp}</td>' + '<td></td>' * (len(info_cols) + ncell) + '</tr>'
+                last = grp
+            body += f'<tr><td class="lb">{br} · {fm} · {_h.escape(st)}</td>' + '<td></td>' * len(info_cols) + e * ncell + '</tr>'
+    else:
+        for fm, st, br in _SH1_TW:
+            if fm != last:
+                body += f'<tr class="g"><td class="lb">{fm}</td>' + '<td></td>' * (len(info_cols) + ncell) + '</tr>'
+                last = fm
+            body += f'<tr><td class="lb">{_h.escape(st)} · {br}</td>' + '<td></td>' * len(info_cols) + e * ncell + '</tr>'
+    return f'<div class="shw"><table class="sht">{head}<tbody>{body}</tbody></table></div>'
+
+
+def _sh_s2(ent):
+    import html as _h
+    stores = _SH2_STORES[ent]
+    n = len(stores)
+    head = ('<thead><tr><th class="lb">구 분</th>' + ''.join(f'<th colspan="2" class="mo">{_h.escape(x)}</th>' for x in stores) + '</tr>'
+            '<tr><th class="lb">매장등급</th>' + '<th></th><th>%</th>' * n + '</tr></thead>')
+    cells = '<td></td><td class="pc"></td>' * n
+    rows = [('sec', '운영현황'), ('r', '계약시작'), ('r', '계약종료'), ('r', '계약기준 (임차료)'), ('r', '계약기준 (%)'), ('r', '계약면적 (a)'), ('r', '내부창고 면적'),
+            ('r', '실임차료 (b)'), ('r', '관리비 (c)'), ('r', '외부창고 비용'), ('r', '면적당 : (c+b)÷a'), ('r', '인원 (d)'), ('r', '인건비 (e)'), ('r', '인원당 : e÷d'),
+            ('sec', '영업지표 (<span class="shm">N월</span>)'), ('r', '매출(ERP/고정환율)'), ('r', '매출(회계마감)'), ('r', '매출총이익'), ('r', '판관비'),
+            ('sub', '인건비'), ('sub', '유통비용'), ('sub', '광고판촉'), ('sub', '감가상각'), ('sub', '로열티'), ('sub', '물류비'), ('sub', '기타'),
+            ('r', '직접성과이익'), ('r', '공통비 배부'), ('r', '영업이익')]
+    if ent == 'HK':
+        rows += [('r', '매출*계약(%) (f)'), ('r', '(b)>(f)')]
+    rows += [('r', 'BEP 매출 (추정)'), ('sec', '매출 비교 (<span class="shr">N/1~N/31</span>)' + ('' if ent == 'HK' else ' · 경쟁사/자사 %'))]
+    rows += [('r', c) for c in _SH2_COMP[ent]]
+    body = ''
+    for kind, lab in rows:
+        if kind == 'sec':
+            body += f'<tr class="sec"><td class="lb">{lab}</td>' + '<td></td>' * (2 * n) + '</tr>'
+        else:
+            body += f'<tr class="{"sub" if kind == "sub" else ""}"><td class="lb">{_h.escape(lab) if "<" not in lab else lab}</td>{cells}</tr>'
+    note = ('※ 금액 단위 : 천원 (1 HKD = 185 KRW). 매출 비교는 경쟁 브랜드 매출.' if ent == 'HK' else '※ 금액 단위 : 천원 (1 TWD = 46 KRW). 매출 비교 %는 자사 대비 비율')
+    return f'<div class="shw"><table class="sht">{head}<tbody>{body}</tbody></table></div><div class="shn">{note}</div>'
+
+
+def sheet_fragment(ent):
+    """한판자료 본문(양식 2종) → (html, js). 영업일지 화면과 store_board.html 양쪽에서 쓴다."""
+    mmax = 10 if ent == 'HK' else 9
+    mbtn = ''.join(f'<button type="button" data-m="{m}"{" class=on" if m == mmax else ""}>{m}월</button>' for m in range(1, mmax + 1))
+    mbtn += '<button type="button" data-m="cum">누계</button><button type="button" data-m="avg">월평균</button>'
+    js = ('(function(){var g=document.getElementById("shm");if(!g)return;var t=document.getElementById("sh2t"),sp=document.querySelectorAll(".shm"),rg=document.querySelectorAll(".shr");'
+          'function go(k){[].forEach.call(g.children,function(b){b.classList.toggle("on",b.getAttribute("data-m")===k)});'
+          'var lab=k==="cum"?"1~' + str(mmax) + '월 누계":k==="avg"?"1~' + str(mmax) + '월 월평균":k+"월";'
+          'if(t)t.textContent="● "+(k==="cum"?"1~' + str(mmax) + '월 마감 누계 기준":k==="avg"?"1~' + str(mmax) + '월 마감 월평균 기준":k+"월 당월 마감 기준");'
+          '[].forEach.call(sp,function(e){e.textContent=lab});[].forEach.call(rg,function(e){e.textContent=(k==="cum"||k==="avg")?"1/1~' + str(mmax) + '월말":(k+"/1~"+k+"월말")})}'
+          'g.addEventListener("click",function(e){var b=e.target.closest("button");if(b)go(b.getAttribute("data-m"))});go("' + str(mmax) + '")})();')
+    body = (f'<div class="shp"><div class="ntc">{B("양식만 만든 화면입니다. 숫자는 아직 채우지 않았습니다 (본사 작성지시 양식 2종과 같은 구성).", "Layout only. Figures are not filled yet (same structure as the two HQ report forms).", "僅版面，數字尚未填入（與總部兩份報表格式相同）。")}</div>'
+            f'<div class="shh"><h2>1. {B("월별 매출 현황", "Monthly sales status", "月別銷售現況")}</h2><small>(KRW)</small></div>{_sh_s1(ent)}'
+            f'<div class="shh"><h2>2. {B("매장별 현황 분석", "Store status analysis", "門市現況分析")}</h2><small id="sh2t"></small>'
+            f'<div class="tabs" id="shm" style="margin-left:auto">{mbtn}</div></div>{_sh_s2(ent)}</div>')
+    return body, js
+
+
+def sheet_page(ent):
+    """한판자료 화면(sheet_HK / sheet_TW): 본사 작성지시 양식 2종(월별 매출 현황 · 매장별 현황 분석)의 모양만. 숫자는 나중에."""
+    head = head_block(ent, 'sheet', 'm', '', False, 'sheet', [], brand=False)
+    body, js = sheet_fragment(ent)
+    return f"""<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{ent} One-sheet</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.css">
+<style>{CSS}{EXTRA_CSS}{CSS2}{HDR_CSS}{SHEET_CSS}</style></head><body data-lang="ko" class="sumpage">
+{head}
+{body}
+<script>var N=1;</script>
+<script>{LANG_JS}</script>
+<script>{HDR_JS}</script>
+<script>{js}</script>
+{loader_tag()}
+</body></html>"""
+
+
+def generate_sheet(latest, api_url='', served=False, status='final', asof=None, out_dir=None, only=None):
+    """한판자료 화면(sheet_HK / sheet_TW): 양식만."""
+    import datetime
+    CFG.update(served=served, status=status, blank=True, api_url=api_url, arch='',
+               asof=asof or datetime.datetime.now().strftime('%Y-%m-%d %H:%M'))
+    out = {}
+    for ent in ('HK', 'TW'):
+        if only and ent not in only:
+            continue
+        out['sheet_' + ent] = sheet_page(ent)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
         for name, html in out.items():

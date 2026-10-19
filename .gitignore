@@ -1,2 +1,10 @@
 __pycache__/
 *.pyc
+summary_draft/
+summary_approved/
+summary_quant/
+_sheet_read_*.json
+_summary_demo_*.json
+summarizer_login.txt
+api_url.txt
+push_key.txt
