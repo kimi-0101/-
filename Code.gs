@@ -37,7 +37,7 @@ var DEPT_KO = { GM: 'GM', MD: '상품기획', SALES: '영업', EC: 'EC', VMD: 'V
 /** 주소로 들어오면 로그인 화면만 내려보내고, 로그인 후 화면(HTML)은 API 로 받는다. (화면 안의 숫자는 로그인 전에 노출되지 않음) */
 function doGet(e) {
   var page = (e && e.parameter && e.parameter.p) || 'journal_TW';
-  if (!/^(journal|summary|monthly|yearly|msummary|ysummary|bep)_(HK|TW)(@(W|M)\d{1,2})?$/.test(page)) page = 'journal_TW';
+  if (!/^(journal|summary|monthly|yearly|msummary|ysummary|bep|store)_(HK|TW)(@(W|M)\d{1,2})?$/.test(page)) page = 'journal_TW';
   var html = SHELL_HTML.replace('__API__', ScriptApp.getService().getUrl()).replace('__PAGE__', page);
   return HtmlService.createHtmlOutput(html).setTitle('Weekly Sales Journal')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1')
@@ -593,7 +593,7 @@ function samePushKey_(k) {
 }
 
 function validPage_(name) {
-  if (!/^(journal|summary|monthly|yearly|msummary|ysummary|bep)_(HK|TW)(@(W|M)\d{1,2})?$/.test(String(name || ''))) throw new Error('페이지 이름이 올바르지 않습니다.');
+  if (!/^(journal|summary|monthly|yearly|msummary|ysummary|bep|store)_(HK|TW)(@(W|M)\d{1,2})?$/.test(String(name || ''))) throw new Error('페이지 이름이 올바르지 않습니다.');
   return name;
 }
 
