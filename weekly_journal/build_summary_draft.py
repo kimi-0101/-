@@ -2,7 +2,7 @@
 """SUMMARY 5~7 핵심 정리 만들기 (자동, 검수 없음): 시트에서 부서 글 읽기 → 정리(AI) → 숫자 대조·사실 검증 → 화면용 핵심만 추려 영·중 번역
 → summary_draft/{ENT}_{CODE}.json  (summary_render 가 이 파일의 'display' 를 SUMMARY 화면에 쓴다)
 
-화면에는 라벨마다 '핵심 한 줄'만 보인다(자세한 내용은 '부서 원문 보기'). 숫자 대조·사실 검증에서 걸린 줄은 화면에서 뺀다(원문 보기로 확인).
+화면에는 라벨마다 '핵심'만 보인다(같은 맥락이면 한 줄, 다른 맥락이면 여러 줄)(자세한 내용은 '부서 원문 보기'). 숫자 대조·사실 검증에서 걸린 줄은 화면에서 뺀다(원문 보기로 확인).
 사용:  python weekly_journal/build_summary_draft.py --ent TW --code M09 [--force] [--redo-display]
        python weekly_journal/build_summary_draft.py --auto-week 42            (그 주의 주간·이번 달·지난 달 코드를 양쪽 법인 모두)
        --code 는 월간 M09, 주간 W41.   원문이 지난번과 같으면(해시 동일) 다시 만들지 않는다. --force 로 강제.
@@ -38,6 +38,11 @@ def has_content(ko):
     return any((ko or {}).get(k) for k in ('sec5', 'sec6', 'sec7'))
 
 
+def _line_bad(t, have, bad_sent):
+    nt = _norm(t)
+    return any(n not in have for n in S.nums(t)) or any(x and (x == nt or x in nt or nt in x) for x in bad_sent)
+
+
 def make_display(out, flags, warn, cells, quant):
     """화면용: 라벨마다 핵심 한 줄만. 숫자 대조·사실 검증에 걸린 줄은 뺀다. 전략(7번)은 항목마다 숫자 대조 + 사실 검증에 걸린 문장은 뺀다."""
     bad = {(f[0], f[1], f[2]) for f in flags}
@@ -59,10 +64,23 @@ def make_display(out, flags, warn, cells, quant):
             for lab, v in (labs or {}).items():
                 if not v or not v[0]:
                     continue
-                if (sk, dept, lab) in bad or (sk, dept, None) in bad:
+                lines = [x for x in (v[0] if isinstance(v[0], list) else [v[0]]) if x]
+                if not lines:
+                    continue
+                label_bad = (sk, dept, lab) in bad or (sk, dept, None) in bad
+                if len(lines) > 1:                       # 여러 줄이면 걸린 줄만 뺀다(걸린 줄을 못 찾으면 라벨 전체를 뺀다)
+                    ok = [t for t in lines if not _line_bad(t, have, bad_sent)]
+                    if label_bad and len(ok) == len(lines):
+                        ok = []
+                    for t in lines:
+                        if t not in ok:
+                            dropped.append(f'{sk}/{dept}/{lab}/{t[:20]}')
+                    lines = ok
+                elif label_bad:
                     dropped.append(f'{sk}/{dept}/{lab}')
                     continue
-                row[lab] = [v[0], None]
+                if lines:
+                    row[lab] = [lines if len(lines) > 1 else lines[0], None]
             if row:
                 disp[sk][dept] = row
     for dept, items in (out.get('sec7') or {}).items():

@@ -83,6 +83,24 @@ class T(unittest.TestCase):
         res = B.run_all(['HK'], ['M09'], say=lambda *_: None)
         self.assertEqual(res, {'HK M09': 'read-failed'})
 
+    def test_multiline_core_drops_only_bad_line(self):
+        cells = CELLS + [{'sec': 'sec6', 'dept': '영업', 'item': '결과', 'text': '온라인 20% 증가, 오프라인 5% 감소'}]
+        out = {'sec5': {}, 'sec6': {'영업': {'결과': [['온라인 20% 증가', '오프라인 5% 감소', '전 채널 777% 성장'], None]}}, 'sec7': {}}
+        disp, dropped = B.make_display(out, [('sec6', '영업', '결과', ['777'])], [], cells, '')
+        self.assertEqual(disp['sec6']['영업']['결과'][0], ['온라인 20% 증가', '오프라인 5% 감소'])
+        self.assertEqual(len(dropped), 1)
+
+    def test_multiline_unlocatable_flag_drops_label(self):
+        cells = [{'sec': 'sec6', 'dept': '영업', 'item': '결과', 'text': '온라인 20% 증가, 오프라인 5% 감소'}]
+        out = {'sec5': {}, 'sec6': {'영업': {'결과': [['온라인 20% 증가', '오프라인 5% 감소'], None]}}, 'sec7': {}}
+        disp, _ = B.make_display(out, [], [{'위치': 'sec6/영업/결과/핵심'}], cells, '')
+        self.assertEqual(disp['sec6'], {})
+
+    def test_render_multiline(self):
+        import summary_render as SR
+        h = SR._cards('sec6', {'sec6': {'영업': {'결과': [['가', '나'], None]}}}, 'ko')
+        self.assertEqual(h.count('class="cr"'), 2)
+
 
 if __name__ == '__main__':
     unittest.main()

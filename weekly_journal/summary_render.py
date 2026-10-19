@@ -84,8 +84,9 @@ def _cards(sec_key, data, lang):
                 if not v or not v[0]:
                     continue
                 core, det = v[0], (v[1] if len(v) > 1 else None)
+                crs = ''.join(f'<span class="cr">{fmt(x)}</span>' for x in (core if isinstance(core, list) else [core]) if x)
                 dt = f'<span class="dt">{fmt(det)}</span>' if det else ''
-                rows += f'<div class="it"><span class="lb">{_label(lab, lang)}</span><span class="tx"><span class="cr">{fmt(core)}</span>{dt}</span></div>'
+                rows += f'<div class="it"><span class="lb">{_label(lab, lang)}</span><span class="tx">{crs}{dt}</span></div>'
             if not rows:
                 continue
             body = rows
