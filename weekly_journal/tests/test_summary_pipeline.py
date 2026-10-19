@@ -120,6 +120,15 @@ class Tr(unittest.TestCase):
         S.call_claude = lambda p, model=None: json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['Stage 2, 20% expansion']}})
         self.assertEqual(S.translate_struct(self.KO, '영어')['sec7']['GM'], ['Stage 2, 20% expansion'])
 
+    def test_month_digit_may_drop_in_english_but_new_numbers_may_not(self):
+        ko = {'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['9월 목표 20% 달성']}}
+        S.call_gemini = lambda p, timeout=120: json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['September target 20% achieved']}})
+        S.call_claude = lambda p, model=None: (_ for _ in ()).throw(AssertionError('claude'))
+        self.assertTrue(S.translate_struct(ko, '영어'))                       # 9 가 사라져도 통과
+        S.call_gemini = lambda p, timeout=120: json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['September target 25% achieved']}})
+        S.call_claude = lambda p, model=None: json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['target 21% achieved']}})
+        self.assertIsNone(S.translate_struct(ko, '영어'))                     # 새 숫자는 불통과
+
     def test_gemini_error_and_claude_bad_returns_none(self):
         def boom(p, timeout=120):
             raise RuntimeError('429')

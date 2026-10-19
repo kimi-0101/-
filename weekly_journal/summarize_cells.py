@@ -202,18 +202,33 @@ def translate_struct(ko_struct, lang_name, model=None):
         if isinstance(x, list):
             return [shape(v) for v in x]
         return None
-    want = nums(' '.join(_texts(ko_struct)))
-    def ok(out):
-        return shape(out) == shape(ko_struct) and nums(' '.join(_texts(out))) == want
+    ko_text = ' '.join(_texts(ko_struct))
+    want = nums(ko_text)
+    months = set(re.findall(r'(\d{1,2})\s*월', ko_text))              # '9월' 은 영어에서 'September' 로 숫자가 사라지는 것이 자연스럽다
+
+    def problem(out):
+        """번역이 원본과 어긋난 점. 없으면 ''. 숫자는 새로 생기면 안 되고, 월(月) 숫자만 빠져도 된다."""
+        if shape(out) != shape(ko_struct):
+            return '구조(키·배열 길이)가 다름'
+        got = nums(' '.join(_texts(out)))
+        extra, missing = sorted(got - want), sorted(n for n in want - got if n not in months)
+        if extra or missing:
+            return f'숫자 늘어남 {extra} / 빠짐 {missing}'
+        return ''
     try:
         out = parse_json(call_gemini(prompt))
-        if ok(out):
+        why = problem(out)
+        if not why:
             return out
-        print('[알림] Gemini 번역이 구조·숫자 검사에 걸려 Claude 로 다시 번역')
+        print(f'[알림] Gemini 번역이 검사에 걸려 Claude 로 다시 번역 — {why}')
     except Exception as ex:
         print(f'[알림] Gemini 번역 불가 → Claude 로 번역: {ex!r}'[:200])
     out = parse_json(call_claude(prompt, model=model))
-    return out if ok(out) else None
+    why = problem(out)
+    if why:
+        print(f'[알림] Claude 번역도 검사에 걸려 버림 — {why}')
+        return None
+    return out
 
 
 def demo_tw():
