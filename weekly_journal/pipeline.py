@@ -126,6 +126,11 @@ def build_summaries(week, only, mode, dry_run, codes=None, force=False):
 
 
 def main(argv=None):
+    for _s in (sys.stdout, sys.stderr):                    # 로그를 파일·파이프로 보내면 한글 윈도우(cp949)가 '—' 같은 글자를 못 써서 죽는다 → 못 쓰는 글자는 ?로 바꿔 계속 진행
+        try:
+            _s.reconfigure(errors='replace')
+        except Exception:
+            pass
     ap = argparse.ArgumentParser(description='주간영업일지 숫자 반영')
     ap.add_argument('--week', type=int, required=True, help='최신 주차 번호 (예: 40)')
     ap.add_argument('--status', choices=['draft', 'final'], default='draft', help='임시(draft) / 최종(final)')
@@ -135,7 +140,7 @@ def main(argv=None):
     ap.add_argument('--summary', choices=['auto', 'yes', 'no'], default='auto', help='SUMMARY 5·6·7 정리본 새로 만들기 (auto: --dry-run 이 아닐 때만, no: 만들지 않음)')
     ap.add_argument('--summary-codes', nargs='*', help='정리할 코드 (예: M09 W41). 없으면 그 주·이번 달·지난 달 자동')
     ap.add_argument('--summary-force', action='store_true', help='원문이 같아도 정리본을 다시 만든다')
-    ap.add_argument('--translator', choices=['auto', 'claude', 'gemini'], default='auto', help='번역기: auto(Gemini 키가 있으면 Gemini, 없으면 Claude) / claude(전부 Claude — 사용량 측정용) / gemini')
+    ap.add_argument('--translator', choices=['auto', 'claude', 'gemini'], default='auto', help='번역기: auto(Gemini 키가 있으면 Gemini, 없으면 Claude) / claude(전부 Claude, 사용량 측정용) / gemini')
     ap.add_argument('--summary-only', action='store_true', help='정리본만 만들고 끝낸다 (화면 생성·반영은 하지 않음. 새벽 등 따로 돌릴 때)')
     ap.add_argument('--no-refresh', action='store_true', help='과거 주 ERP 재정렬(refresh_past_weeks.py)을 건너뛴다')
     ap.add_argument('--no-ledger', action='store_true', help='시작 전에 ERP 원장을 갱신하지 않는다')

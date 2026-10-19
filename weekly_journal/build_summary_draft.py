@@ -15,6 +15,7 @@ import datetime
 import hashlib
 import json
 import os
+import sys
 
 import sheet_reader as R
 import summarize_cells as S
@@ -234,6 +235,11 @@ def run_all(ents, codes, say=print, force=False, max_fail=2):
 
 
 def main(argv=None):
+    for _s in (sys.stdout, sys.stderr):                    # 로그를 파일·파이프로 보내면 한글 윈도우(cp949)가 '—' 같은 글자를 못 써서 죽는다 → 못 쓰는 글자는 ?로 바꿔 계속 진행
+        try:
+            _s.reconfigure(errors='replace')
+        except Exception:
+            pass
     ap = argparse.ArgumentParser()
     ap.add_argument('--ent', choices=['HK', 'TW'])
     ap.add_argument('--code')

@@ -110,6 +110,11 @@ def run(out, keep=30, photos=True, say=print, now=None, codes=None, ents=ENTS):
 
 
 def main(argv=None):
+    for _s in (sys.stdout, sys.stderr):                    # 로그를 파일·파이프로 보내면 한글 윈도우(cp949)가 '—' 같은 글자를 못 써서 죽는다 → 못 쓰는 글자는 ?로 바꿔 계속 진행
+        try:
+            _s.reconfigure(errors='replace')
+        except Exception:
+            pass
     ap = argparse.ArgumentParser()
     ap.add_argument('--out', default=os.path.join(os.path.dirname(HERE), 'wj_backup'))
     ap.add_argument('--keep', type=int, default=30, help='날짜 폴더 보관 일수')
