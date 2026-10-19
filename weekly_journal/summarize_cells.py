@@ -27,13 +27,13 @@ STYLE = """너는 영업일지 SUMMARY 정리 담당이다. 부서가 쓴 원문
   · 원인 = 원문이 '~때문/~영향/~로 인해' 식으로 밝힌 이유만. 숫자 나열이나 실적 서술은 결과로 보낸다.
   · 조치 = 앞으로 하겠다/해야 한다는 내용 중 그 부서에서 가장 우선순위가 높은 하나. 그 부서의 6번 글과 7번 글을 모두 보고 고른다(7번 글의 첫째 과제를 우선).
   · 어느 칸에 쓸지 헷갈리면: 숫자·실적 서술=결과, 이유=원인, 해야 할 일=조치.
-  · 한 칸의 보충에 다른 라벨의 내용을 섞지 않는다. 원문이 길고 여러 주제가 섞인 칸(GM 총평·특이사항 등)은 먼저 문장을 결과/원인/조치로 나눠 배정한 뒤 쓴다:
+  · 한 라벨에 다른 라벨의 내용을 섞지 않는다. 원문이 길고 여러 주제가 섞인 칸(GM 총평·특이사항 등)은 먼저 문장을 결과/원인/조치로 나눠 배정한 뒤 쓴다:
     '목표 달성·증감·브랜드별 숫자'=결과, '~가 견인/기여/영향/불균형'처럼 이유를 설명한 문장=원인, '~필요/~할 것/~해야'=조치.
   · 한 부서에 6번 글이 여러 칸(총평·특이사항 등)이면 모두 합쳐서 본다.
 - 7 다음 달 전략: 부서마다 앞으로 할 전략을 빠짐없이 번호 목록(문자열 배열)으로. 'HQ 요청사항' 칸은 부서 'GM(HQ 요청)' 으로 따로 둔다.
-- 각 항목(동향/대응/결과/원인/조치)은 [핵심, 보충] 두 개짜리 배열이다. 보충할 내용이 없으면 두 번째를 null.
+- 각 항목(동향/대응/결과/원인/조치)은 [핵심, null] 두 개짜리 배열이다. 두 번째는 항상 null (보충 설명은 쓰지 않는다. 자세한 내용은 화면의 '부서 원문 보기'에 있다).
   핵심 = 말하려는 요지를 분명하게 쓴 문장(30자 안팎). 같은 맥락이면 한 문장(문자열)으로 합치고, 서로 다른 맥락(예: 채널이 다르거나 주제가 다른 내용)이면 맥락마다 한 문장씩 나눠 문자열 배열로 쓴다(최대 3문장). 억지로 쪼개거나 같은 말을 반복하지 않는다. 핵심이 한 문장이면 문자열, 여러 문장이면 배열.
-  보충 = 숫자·사례·세부 내용, 최대 2문장이고 세미콜론(;)은 쓰지 않는다(쉼표·가운뎃점 사용).
+  숫자·사례는 핵심 문장 안에 넣는다.
 - 주간 일지(대상이 'W41' 같은 주차)이면 '이번 달·다음 달'을 '이번 주·다음 주'로 읽는다.
 - 같은 라벨을 두 번 쓰지 않는다. 재료가 원문에 없는 라벨은 null (억지로 만들지 않는다).
 
@@ -50,7 +50,7 @@ STYLE = """너는 영업일지 SUMMARY 정리 담당이다. 부서가 쓴 원문
 - 원인은 원문이 이유로 쓴 것만. 데이터로 뒷받침되는지는 판단하지 않는다(방문객·교통량 같은 담당자 의견도 그대로 원인으로 쓴다).
 
 [출력] 설명 없이 JSON 한 개만:
-{"sec5": {"부서": {"동향": ["핵심 또는 [핵심1,핵심2]","보충|null"], "대응": [..]}}, "sec6": {"부서": {"결과": [..], "원인": [..], "조치": [..]}}, "sec7": {"부서": ["항목1","항목2"]}}
+{"sec5": {"부서": {"동향": ["핵심 또는 [핵심1,핵심2]",null], "대응": [..]}}, "sec6": {"부서": {"결과": [..], "원인": [..], "조치": [..]}}, "sec7": {"부서": ["항목1","항목2"]}}
 라벨을 만들 재료가 없으면 해당 키는 null, 칸이 없는 섹션은 빈 객체 {}."""
 
 
@@ -66,6 +66,8 @@ def build_prompt(ent, period, cells, quant_text):
     return '\n'.join(lines)
 
 
+import threading
+_ULOCK = threading.Lock()
 USAGE = {'calls': 0, 'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0, 'cost': 0.0, 'metered': 0}
 
 
@@ -85,19 +87,22 @@ def usage_report():
 
 def _meter(stdout):
     """claude --output-format json 결과에서 본문과 토큰을 꺼낸다. JSON 이 아니면 원문 그대로."""
-    USAGE['calls'] += 1
     try:
         d = json.loads(stdout)
         text = d['result']
         us = d.get('usage') or {}
     except (ValueError, KeyError, TypeError):
+        with _ULOCK:
+            USAGE['calls'] += 1
         return stdout
-    USAGE['metered'] += 1
-    USAGE['input'] += int(us.get('input_tokens') or 0)
-    USAGE['output'] += int(us.get('output_tokens') or 0)
-    USAGE['cache_read'] += int(us.get('cache_read_input_tokens') or 0)
-    USAGE['cache_write'] += int(us.get('cache_creation_input_tokens') or 0)
-    USAGE['cost'] += float(d.get('total_cost_usd') or 0)
+    with _ULOCK:                                                  # 영어·중국어를 동시에 부르므로 합산은 잠그고 한다
+        USAGE['calls'] += 1
+        USAGE['metered'] += 1
+        USAGE['input'] += int(us.get('input_tokens') or 0)
+        USAGE['output'] += int(us.get('output_tokens') or 0)
+        USAGE['cache_read'] += int(us.get('cache_read_input_tokens') or 0)
+        USAGE['cache_write'] += int(us.get('cache_creation_input_tokens') or 0)
+        USAGE['cost'] += float(d.get('total_cost_usd') or 0)
     return text
 
 

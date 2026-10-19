@@ -40,6 +40,18 @@ class T(unittest.TestCase):
             raise RuntimeError('limit')
         return {'tag': name}
 
+    def test_translations_run_concurrently(self):
+        import time
+        def slow(ko, name):
+            time.sleep(0.3)
+            return {'tag': name}
+        S.translate_struct = slow
+        out = {'sec5': {}, 'sec6': {'GM': {'결과': ['매출 100만 달성', None]}}, 'sec7': {}}
+        t0 = time.time()
+        res, _ = B.build_display_i18n(out, [], [], CELLS, '', say=lambda *_: None)
+        self.assertLess(time.time() - t0, 0.55)                    # 순서대로면 0.6초 이상
+        self.assertEqual(sorted(res), ['en', 'ko', 'zh'])
+
     def test_auto_codes(self):
         D = datetime.date
         self.assertEqual(B.auto_codes(41, 2026, today=D(2026, 10, 19)), ['W41', 'M10'])          # 중순 이후엔 지난 달을 다시 보지 않는다

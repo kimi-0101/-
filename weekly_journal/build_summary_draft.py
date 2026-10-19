@@ -115,9 +115,10 @@ def build_display_i18n(out, flags, warn, cells, quant, have=None, say=print):
         if lg != 'ko' and have[lg]:
             res[lg] = have[lg]
     if has_content(ko):
-        for lg, name in LANGS:
-            if lg in res:
-                continue
+        todo = [(lg, name) for lg, name in LANGS if lg not in res]
+
+        def one(item):
+            lg, name = item
             tr = None
             for attempt in (1, 2):                      # 구조가 어긋나 None 이 오는 경우가 있어 한 번 더 시도
                 try:
@@ -128,6 +129,14 @@ def build_display_i18n(out, flags, warn, cells, quant, have=None, say=print):
                     break                               # 호출 자체가 실패(한도 등)면 재시도하지 않는다
                 if tr:
                     break
+            return lg, tr
+        if len(todo) > 1:                               # 영어·중국어는 서로 독립이라 동시에 부른다(시간 절반)
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=len(todo)) as ex_:
+                got = list(ex_.map(one, todo))
+        else:
+            got = [one(t) for t in todo]
+        for lg, tr in got:
             if tr:
                 res[lg] = tr
     return res, dropped
