@@ -181,16 +181,21 @@ def build(ent, code, cells=None, force=False, redo_display=False, quant_file=Non
     _save(path, {'ent': ent, 'code': code, 'made_at': datetime.datetime.now().strftime('%Y-%m-%d %H:%M'), 'hash': h,
                  'quant': quant, 'cells': cells, 'out': out, 'flags': flags, 'warn': warn, 'display': disp, 'dropped': dropped})
     say(f'저장: {path} / 사실 검증 경고 {len(warn)}건, 화면에서 뺀 줄 {len(dropped)}개 / 번역 빠짐 {missing_langs(disp)}')
+    for d_ in dropped:
+        say(f'   뺌: {d_}')
+    for w_ in warn:
+        say(f"   경고: {str(w_.get('위치', ''))} — {str(w_.get('문제', ''))[:60]}")
     return 'made'
 
 
-def auto_codes(week, year=None):
-    """그 주(ISO)의 주간 코드 + 그 주가 속한 달 + 지난 달.  예) 41주 → ['W41', 'M10', 'M09']  (지난 달은 월초에 마감 글이 고쳐질 수 있어 함께)"""
-    year = year or datetime.date.today().year
+def auto_codes(week, year=None, today=None):
+    """그 주(ISO)의 주간 코드 + 그 주가 속한 달 (+ 월초(14일까지)엔 지난 달).  예) 10/19 에 41주 → ['W41', 'M10'], 11/3 에 44주 → ['W44', 'M11', 'M10']"""
+    today = today or datetime.date.today()
+    year = year or today.year
     mon = datetime.date.fromisocalendar(year, int(week), 1)
     sun = mon + datetime.timedelta(days=6)
     codes = [f'W{int(week)}', f'M{sun.month:02d}']
-    if sun.month > 1:
+    if sun.month > 1 and today.day <= 14:               # 지난 달 마감 글은 월초에만 고쳐진다 — 실행하는 날이 중순 이후면 다시 보지 않는다(사용량 절약)
         codes.append(f'M{sun.month - 1:02d}')
     return list(dict.fromkeys(codes))
 

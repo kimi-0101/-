@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -65,22 +66,41 @@ def build_prompt(ent, period, cells, quant_text):
     return '\n'.join(lines)
 
 
+LEAN_SYSTEM = '너는 영업일지 정리 도우미다. 요청한 형식의 출력만 낸다.'
+
+
+def _claude_cmds(exe, model):
+    base = [exe, '-p', '--output-format', 'text', '--no-session-persistence', '--tools', '']
+    if model:
+        base += ['--model', model]
+    plain = (base, None)
+    if os.environ.get('WJ_CLAUDE_LEAN', '1') == '0':
+        return [plain]
+    import tempfile
+    neutral = os.path.join(tempfile.gettempdir(), 'wj_claude_cwd')       # 프로젝트 폴더의 CLAUDE.md·메모리가 매번 딸려 들어가지 않게 빈 폴더에서 부른다
+    os.makedirs(neutral, exist_ok=True)
+    lean = (base + ['--system-prompt', LEAN_SYSTEM], neutral)             # 기본 시스템 프롬프트(코딩 도구용)도 쓰지 않는다
+    return [lean, plain]                                                  # 가벼운 방식이 안 되면(구버전·신뢰 문제 등) 예전 방식으로 한 번 더
+
+
 def call_claude(prompt, model=None, timeout=300):
     import shutil
     exe = shutil.which('claude') or shutil.which('claude.cmd')      # Windows 는 npm 이 claude.cmd 로 설치함
     if not exe:
         raise RuntimeError('claude 명령을 찾지 못함 (PATH 확인)')
-    cmd = [exe, '-p', '--output-format', 'text', '--no-session-persistence', '--tools', '']
-    if model:
-        cmd += ['--model', model]
     env = dict(os.environ, PYTHONIOENCODING='utf-8', PYTHONUTF8='1')
-    r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, encoding='utf-8', env=env, timeout=timeout)
-    if r.returncode != 0:
-        raise RuntimeError(f'claude 종료코드 {r.returncode}: {(r.stderr or r.stdout)[-300:]}')
-    return r.stdout
+    tries = _claude_cmds(exe, model)
+    for k, (cmd, cwd) in enumerate(tries):
+        r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, encoding='utf-8', env=env, timeout=timeout, cwd=cwd)
+        if r.returncode == 0:
+            return r.stdout
+        err = (r.stderr or r.stdout)[-300:]
+        if k == len(tries) - 1 or 'limit' in err.lower():                 # 사용 한도면 다시 불러도 소용없다
+            raise RuntimeError(f'claude 종료코드 {r.returncode}: {err}')
 
 
 GEMINI_MODEL = 'gemini-2.5-flash'
+GEMINI_RETRY_WAIT = 5                                                      # 호출 실패(한도 등) 뒤 잠깐 쉬었다가 한 번 더
 
 
 def _gemini_key():
@@ -195,7 +215,7 @@ def _texts(x):
 def translate_struct(ko_struct, lang_name, model=None):
     """한글 정리본(sec5/sec6/sec7 구조)을 다른 언어로 번역. 구조와 숫자가 원본과 같을 때만 반환, 아니면 None.
     번역은 Gemini 우선(Claude 사용 한도 절약), 호출 실패나 검사 불합격이면 Claude 로 한 번 더 시도한다."""
-    prompt = TRANS_PROMPT.format(lang=lang_name) + '\n\n' + json.dumps(ko_struct, ensure_ascii=False)
+    prompt = base_prompt = TRANS_PROMPT.format(lang=lang_name) + '\n\n' + json.dumps(ko_struct, ensure_ascii=False)
     def shape(x):
         if isinstance(x, dict):
             return {k: shape(v) for k, v in x.items()}
@@ -215,18 +235,32 @@ def translate_struct(ko_struct, lang_name, model=None):
         if extra or missing:
             return f'숫자 늘어남 {extra} / 빠짐 {missing}'
         return ''
-    try:
-        out = parse_json(call_gemini(prompt))
+    key_missing = False
+    for attempt in (1, 2):
+        try:
+            out = parse_json(call_gemini(prompt))
+        except RuntimeError as ex:
+            if 'gemini 키 없음' in str(ex):
+                key_missing = True
+                break
+            print(f'[알림] Gemini 호출 실패({attempt}/2): {ex!r}'[:200])
+            time.sleep(GEMINI_RETRY_WAIT)
+            continue
+        except Exception as ex:                                           # 응답이 JSON 이 아닌 경우 등
+            print(f'[알림] Gemini 응답 해석 실패({attempt}/2): {ex!r}'[:200])
+            continue
         why = problem(out)
         if not why:
             return out
-        print(f'[알림] Gemini 번역이 검사에 걸려 Claude 로 다시 번역 — {why}')
-    except Exception as ex:
-        print(f'[알림] Gemini 번역 불가 → Claude 로 번역: {ex!r}'[:200])
-    out = parse_json(call_claude(prompt, model=model))
+        print(f'[알림] Gemini 번역이 검사에 걸림({attempt}/2) — {why}')
+        prompt = base_prompt + f'\n\n[이전 번역의 문제] {why}. 숫자와 구조를 원문과 똑같이 맞춰 다시 번역한다.'
+    if not key_missing:
+        print('[알림] 번역을 채우지 못함 — Claude 로 넘기지 않음(사용량 절약). 다음 실행에서 번역만 다시 시도합니다.')
+        return None
+    out = parse_json(call_claude(base_prompt, model=model))               # Gemini 키가 없을 때만 Claude 로 번역
     why = problem(out)
     if why:
-        print(f'[알림] Claude 번역도 검사에 걸려 버림 — {why}')
+        print(f'[알림] Claude 번역이 검사에 걸려 버림 — {why}')
         return None
     return out
 
