@@ -10,6 +10,8 @@ import summarize_cells as S
 
 REAL_TRANSLATE = S.translate_struct
 REAL_CALL_CLAUDE = S.call_claude
+REAL_SUMMARIZE = S.summarize
+REAL_VERIFY = S.verify_claims
 
 CELLS = [{'sec': 'sec6', 'dept': 'GM', 'item': '결과', 'text': '매출 100만 달성'},
          {'sec': 'sec7', 'dept': 'GM', 'item': '전략', 'text': '11월 행사 2회 진행'}]
@@ -85,13 +87,34 @@ class T(unittest.TestCase):
     def test_empty(self):
         self.assertEqual(B.build('TW', 'M09', cells=[{'sec': 'sec6', 'dept': 'GM', 'item': 'x', 'text': '測試'}]), 'empty')
 
-    def test_run_all_stops_after_two_failures(self):
+    def test_run_all_stops_after_two_consecutive_failures(self):
         def boom(*a):
-            raise RuntimeError('limit')
+            raise RuntimeError('boom')
         S.summarize = boom
         B.R.read_many = lambda ent, codes: {c: (CELLS, {}) for c in codes}
         res = B.run_all(['TW'], ['W41', 'M10', 'M09'], say=lambda *_: None)
         self.assertEqual(res, {'TW W41': 'failed', 'TW M10': 'failed', 'TW M09': 'skipped'})
+
+    def test_run_all_stops_immediately_on_limit_error(self):
+        def lim(*a):
+            raise RuntimeError("You've hit your session limit")
+        S.summarize = lim
+        B.R.read_many = lambda ent, codes: {c: (CELLS, {}) for c in codes}
+        res = B.run_all(['TW'], ['W41', 'M10', 'M09'], say=lambda *_: None)
+        self.assertEqual(res, {'TW W41': 'failed', 'TW M10': 'skipped', 'TW M09': 'skipped'})
+
+    def test_run_all_runs_codes_concurrently(self):
+        import time
+        def slow(name, period, cells, quant):
+            time.sleep(0.3)
+            return {'sec5': {}, 'sec6': {'GM': {'결과': ['매출 100만 달성', None]}}, 'sec7': {}}, []
+        S.summarize = slow
+        B.R.read_many = lambda ent, codes: {c: (CELLS, {}) for c in codes}
+        t0 = time.time()
+        res = B.run_all(['HK', 'TW'], ['W41', 'M10'], say=lambda *_: None, workers=4)
+        self.assertLess(time.time() - t0, 0.7)                       # 차례로 하면 1.2초 이상
+        self.assertEqual(sorted(res.values()), ['made'] * 4)
+        self.assertEqual(list(res), ['HK W41', 'HK M10', 'TW W41', 'TW M10'])      # 결과 순서는 그대로
 
     def test_run_all_read_failure(self):
         def bad(ent, codes):
@@ -353,9 +376,23 @@ class Tr(unittest.TestCase):
         finally:
             subprocess.run, shutil.which = old_run, old_which
             os.environ.pop('WJ_CLAUDE_MODEL', None)
-        self.assertIn('[호출] 요약', buf.getvalue()); self.assertIn('출력 1,234토큰', buf.getvalue()); self.assertIn('claude-test-1', buf.getvalue())
+        self.assertIn('[호출]', buf.getvalue()); self.assertIn('요약 ·', buf.getvalue()); self.assertIn('출력 1,234토큰', buf.getvalue()); self.assertIn('claude-test-1', buf.getvalue())
         self.assertEqual(envs[0][1]['MAX_THINKING_TOKENS'], '0')
         self.assertIn('sonnet', envs[0][0])
+
+    def test_engine_switches_summarize_and_verify_to_gemini_without_claude(self):
+        out = {'sec5': {}, 'sec6': {'영업': {'결과': ['매출 20% 증가', None]}}, 'sec7': {}}
+        S.call_claude = lambda *a, **k: (_ for _ in ()).throw(AssertionError('claude 를 부르면 안 됨'))
+        S.call_gemini = lambda p, timeout=120: json.dumps(out) if '정리 담당' in p else '[]'
+        os.environ['WJ_SUMMARIZER'] = 'gemini'; os.environ['WJ_VERIFIER'] = 'gemini'
+        try:
+            got, flags = REAL_SUMMARIZE('홍콩', 'W41', [{'sec': '6', 'dept': '영업', 'item': '총평', 'text': '매출 20% 증가'}])
+            self.assertEqual(got, out); self.assertEqual(flags, [])
+            self.assertEqual(REAL_VERIFY(out, [{'sec': '6', 'dept': '영업', 'item': '총평', 'text': '매출 20% 증가'}]), [])
+            os.environ['WJ_VERIFIER'] = 'none'
+            self.assertEqual(REAL_VERIFY(out, []), [])
+        finally:
+            os.environ.pop('WJ_SUMMARIZER', None); os.environ.pop('WJ_VERIFIER', None)
 
     def test_claude_lean_command_falls_back_to_plain(self):
         import subprocess, shutil

@@ -68,6 +68,12 @@ def build_prompt(ent, period, cells, quant_text):
 
 import threading
 _ULOCK = threading.Lock()
+_CTX = threading.local()
+
+
+def set_ctx(text):
+    _CTX.v = text
+
 USAGE = {'calls': 0, 'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0, 'cost': 0.0, 'metered': 0}
 
 
@@ -107,7 +113,7 @@ def _meter(stdout, label='', secs=None):
     if label:
         models = ','.join((d.get('modelUsage') or {}).keys()) or '?'
         sec = f'{secs:.0f}초 · ' if secs is not None else ''
-        print(f'   [호출] {label} · {sec}출력 {out_tok:,}토큰 · 모델 {models}', flush=True)
+        print(f"   [호출] {getattr(_CTX, 'v', '')} {label} · {sec}출력 {out_tok:,}토큰 · 모델 {models}", flush=True)
     return text
 
 
@@ -233,19 +239,31 @@ CHECK_PROMPT = """너는 영업일지 정리본의 사실 검증 담당이다. �
 설명 없이 JSON 배열만."""
 
 
+def _engine(which):
+    return os.environ.get(which, 'claude').lower()
+
+
 def verify_claims(out, cells, quant_text='', model=None):
-    """2차 호출: 정리본 문장이 원문에 근거하는지 검사. 숫자 관문이 못 잡는 '말 바꿈·범위 확대'를 사람이 검수할 항목으로 올린다."""
+    """2차 호출: 정리본 문장이 원문에 근거하는지 검사. 숫자 관문이 못 잡는 '말 바꿈·범위 확대'를 사람이 검수할 항목으로 올린다.
+    WJ_VERIFIER = claude(기본) | gemini | none(검사 안 함)"""
+    who = _engine('WJ_VERIFIER')
+    if who == 'none':
+        return []
     src = '\n'.join(f"- 섹션{c['sec']} / {c['dept']} / {c['item']}: {c['text']}" for c in cells)
     q = quant_text.strip() or '(없음)'
     prompt = '\n\n'.join([CHECK_PROMPT, '[정량]\n' + q, '[원문]\n' + src, '[정리본]\n' + json.dumps(out, ensure_ascii=False)])
-    txt = call_claude(prompt, model=model, label='검증')
+    txt = call_gemini(prompt, timeout=180) if who == 'gemini' else call_claude(prompt, model=model, label='검증')
     m = re.search(r'\[.*\]', txt, re.S)
     return json.loads(m.group(0)) if m else []
 
 
 def summarize(ent, period, cells, quant_text='', model=None):
+    """WJ_SUMMARIZER = claude(기본) | gemini"""
     prompt = build_prompt(ent, period, cells, quant_text)
-    out = parse_json(call_claude(prompt, model=model, label='요약'))
+    if _engine('WJ_SUMMARIZER') == 'gemini':
+        out = parse_json(call_gemini(prompt, timeout=180))
+    else:
+        out = parse_json(call_claude(prompt, model=model, label='요약'))
     return out, check_numbers(out, cells, quant_text)
 
 

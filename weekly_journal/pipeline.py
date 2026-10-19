@@ -106,7 +106,7 @@ def push(url, key, name, html, status, asof, tries=3):
     raise RuntimeError(f'{name} 반영 실패: {last}')
 
 
-def build_summaries(week, only, mode, dry_run, codes=None, force=False):
+def build_summaries(week, only, mode, dry_run, codes=None, force=False, workers=3):
     """SUMMARY 5·6·7 핵심 정리 만들기 (시트의 부서 글 → AI 정리 → 숫자·사실 검증 → summary_draft/*.json).
     화면을 만들기 전에 불러야 화면이 정리본을 카드로 보여 준다. 어떤 오류도 반영 전체를 막지 않는다 (기존 정리본·원문 표로 계속).
     mode: auto(기본: --dry-run 이 아닐 때만 새로 만듦) / yes(항상) / no(만들지 않음 — 이미 있는 정리본은 화면에 그대로 쓰임)"""
@@ -117,7 +117,7 @@ def build_summaries(week, only, mode, dry_run, codes=None, force=False):
     try:
         import build_summary_draft as B
         use = codes or B.auto_codes(week)
-        res = B.run_all(only or ['HK', 'TW'], use, say=log, force=force)
+        res = B.run_all(only or ['HK', 'TW'], use, say=log, force=force, workers=workers)
         log(f'[요약] 코드 {",".join(use)} — ' + ', '.join(f'{k}:{v}' for k, v in res.items()) + f' ({time.time() - t0:.0f}초)')
         return res
     except Exception as ex:
@@ -141,6 +141,9 @@ def main(argv=None):
     ap.add_argument('--summary-codes', nargs='*', help='정리할 코드 (예: M09 W41). 없으면 그 주·이번 달·지난 달 자동')
     ap.add_argument('--summary-force', action='store_true', help='원문이 같아도 정리본을 다시 만든다')
     ap.add_argument('--translator', choices=['auto', 'claude', 'gemini'], default='auto', help='번역기: auto(Gemini 키가 있으면 Gemini, 없으면 Claude) / claude(전부 Claude, 사용량 측정용) / gemini')
+    ap.add_argument('--workers', type=int, default=3, help='요약을 동시에 돌릴 건수(법인×코드). 1 이면 차례로 (기본 3)')
+    ap.add_argument('--summarizer', choices=['claude', 'gemini'], default='claude', help='정리 엔진: claude(기본) / gemini(무료, Claude 사용량 0 — 품질은 compare_engines.py 로 먼저 비교)')
+    ap.add_argument('--verifier', choices=['claude', 'gemini', 'none'], default='claude', help='사실 검증 엔진: claude(기본) / gemini / none(검증 안 함)')
     ap.add_argument('--summary-only', action='store_true', help='정리본만 만들고 끝낸다 (화면 생성·반영은 하지 않음. 새벽 등 따로 돌릴 때)')
     ap.add_argument('--no-refresh', action='store_true', help='과거 주 ERP 재정렬(refresh_past_weeks.py)을 건너뛴다')
     ap.add_argument('--no-ledger', action='store_true', help='시작 전에 ERP 원장을 갱신하지 않는다')
@@ -152,8 +155,10 @@ def main(argv=None):
     a = ap.parse_args(argv)
 
     os.environ['WJ_TRANSLATOR'] = a.translator
+    os.environ['WJ_SUMMARIZER'] = a.summarizer
+    os.environ['WJ_VERIFIER'] = a.verifier
     if a.summary_only:
-        res = build_summaries(a.week, a.only, 'yes' if a.summary == 'auto' else a.summary, False, a.summary_codes, a.summary_force)
+        res = build_summaries(a.week, a.only, 'yes' if a.summary == 'auto' else a.summary, False, a.summary_codes, a.summary_force, a.workers)
         return 0 if not any(v in ('failed', 'read-failed') for v in res.values()) else 6
 
     miss = need_raw(a.week)
@@ -187,7 +192,7 @@ def main(argv=None):
         log('[중단] api_url.txt 또는 push_key.txt 가 없습니다. (--dry-run 으로 화면만 확인할 수 있습니다)')
         return 3
 
-    build_summaries(a.week, a.only, a.summary, a.dry_run, a.summary_codes, a.summary_force)
+    build_summaries(a.week, a.only, a.summary, a.dry_run, a.summary_codes, a.summary_force, a.workers)
 
     import gen_journal4 as g
     asof = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')

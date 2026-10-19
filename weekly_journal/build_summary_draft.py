@@ -18,6 +18,7 @@ import json
 import os
 import re
 import sys
+import threading
 
 import sheet_reader as R
 import summarize_cells as S
@@ -326,11 +327,12 @@ def auto_codes(week, year=None, today=None):
     return list(dict.fromkeys(codes))
 
 
-def run_all(ents, codes, say=print, force=False, max_fail=2):
-    """여러 법인·코드를 차례로. 시트는 법인당 한 번만 읽고, 한 건이 실패해도 나머지는 계속한다.
-    연속으로 max_fail 번 실패하면(사용 한도 등) 나머지는 건너뛴다. 반환: {'TW M09': '상태', ...}"""
-    res, fails = {}, 0
+def run_all(ents, codes, say=print, force=False, max_fail=2, workers=1):
+    """여러 법인·코드를 처리한다. 시트는 법인당 한 번만 읽고, 한 건이 실패해도 나머지는 계속한다.
+    workers>1 이면 서로 독립인 (법인, 코드)를 동시에 돌려 전체 시간을 줄인다.
+    사용 한도(limit) 오류가 나면 바로 나머지를 건너뛰고, 그 밖의 오류는 max_fail 번 연속이면 건너뛴다. 반환: {'TW M09': '상태', ...}"""
     S.usage_reset()
+    res, tasks = {}, []
     for ent in ents:
         try:
             got = R.read_many(ent, codes)
@@ -340,21 +342,39 @@ def run_all(ents, codes, say=print, force=False, max_fail=2):
                 res[f'{ent} {c}'] = 'read-failed'
             continue
         for code in codes:
-            key = f'{ent} {code}'
-            if fails >= max_fail:
-                res[key] = 'skipped'
-                continue
-            try:
-                cells = got[code][0] if code in got else []
-                res[key] = build(ent, code, cells=cells, force=force, say=say)
-                if res[key] != 'empty':
-                    fails = 0                                   # 성공하면 연속 실패 횟수를 되돌린다
-            except Exception as ex:
-                fails += 1
-                res[key] = 'failed'
-                say(f'[경고] {key} 정리 실패({fails}/{max_fail}) — {ex!r}')
-                if fails >= max_fail:
-                    say('[경고] 연속 실패 — 사용 한도 등으로 보고 나머지 정리는 건너뜁니다 (다음 실행에서 이어서 만듦)')
+            tasks.append((ent, code, got[code][0] if code in got else []))
+    lock, stop, state = threading.Lock(), threading.Event(), {'fails': 0}
+
+    def work(t):
+        ent, code, cells = t
+        key = f'{ent} {code}'
+        if stop.is_set():
+            return key, 'skipped'
+        S.set_ctx(key)
+        try:
+            st = build(ent, code, cells=cells, force=force, say=say)
+            if st != 'empty':
+                with lock:
+                    state['fails'] = 0                          # 성공하면 연속 실패 횟수를 되돌린다
+            return key, st
+        except Exception as ex:
+            with lock:
+                state['fails'] += 1
+                n = state['fails']
+            say(f'[경고] {key} 정리 실패({n}/{max_fail}) — {ex!r}')
+            if 'limit' in str(ex).lower() or n >= max_fail:
+                if not stop.is_set():
+                    say('[경고] 사용 한도 등으로 보고 나머지 정리는 건너뜁니다 (다음 실행에서 이어서 만듦)')
+                stop.set()
+            return key, 'failed'
+
+    if workers > 1 and len(tasks) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(workers, len(tasks))) as ex_:
+            done = list(ex_.map(work, tasks))
+    else:
+        done = [work(t) for t in tasks]
+    res.update(done)
     say('[사용량] ' + S.usage_report())
     return res
 
@@ -371,10 +391,11 @@ def main(argv=None):
     ap.add_argument('--auto-week', type=int, help='그 주의 주간·이번 달·지난 달 코드를 한 번에 (--ent 없으면 양쪽 법인)')
     ap.add_argument('--quant-file')
     ap.add_argument('--force', action='store_true')
+    ap.add_argument('--workers', type=int, default=3, help='동시에 돌릴 건수(법인×코드). 1 이면 차례로')
     ap.add_argument('--redo-display', action='store_true', help='저장된 정리본에서 화면용(핵심+번역)만 다시 만든다')
     a = ap.parse_args(argv)
     if a.auto_week:
-        res = run_all([a.ent] if a.ent else ['HK', 'TW'], auto_codes(a.auto_week), force=a.force)
+        res = run_all([a.ent] if a.ent else ['HK', 'TW'], auto_codes(a.auto_week), force=a.force, workers=a.workers)
         print(json.dumps(res, ensure_ascii=False))
         return 1 if any(v in ('failed', 'read-failed') for v in res.values()) else 0
     if not (a.ent and a.code):
