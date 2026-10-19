@@ -122,7 +122,7 @@ class T(unittest.TestCase):
 class Tr(unittest.TestCase):
     KO = {'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['2단계 20% 확대']}}
     OK = json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['Stage 2, 20% expansion']}})
-    BAD = json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['Stage two, 20% expansion']}})
+    BAD = json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['Stage 3, 20% expansion']}})
 
     def setUp(self):
         S.translate_struct = REAL_TRANSLATE
@@ -195,6 +195,20 @@ class Tr(unittest.TestCase):
         self.assertEqual(S._meter('그냥 글'), '그냥 글')                      # JSON 이 아니면 원문 그대로(측정만 못 함)
         self.assertEqual((S.USAGE['calls'], S.USAGE['metered']), (2, 1))
 
+    def test_spelled_out_small_numbers_and_festival_dates_tolerated(self):
+        ko = {'sec5': {}, 'sec6': {}, 'sec7': {'EC': ['11.11 행사 6주 진행, 20% 할인']}}
+        S.call_gemini = lambda p, timeout=120: json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'EC': ["Singles' Day event for six weeks, 20% discount"]}})
+        self.assertTrue(S.translate_struct(ko, '영어'))
+        S.call_gemini = lambda p, timeout=120: json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'EC': ["Singles' Day event for six weeks, discount"]}})   # 20% 가 빠지면 불통과
+        self.assertIsNone(S.translate_struct(ko, '영어'))
+        S.call_gemini = lambda p, timeout=120: json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'EC': ["Singles' Day event for 7 weeks, 20% discount"]}})   # 새 숫자 7 은 불통과
+        self.assertIsNone(S.translate_struct(ko, '영어'))
+
+    def test_man_unit_and_two_digit_tolerated(self):
+        ko = {'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['3,693만 달성, 두 자릿수 성장']}}
+        S.call_gemini = lambda p, timeout=120: json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['36.93m achieved, double-digit growth']}})
+        self.assertTrue(S.translate_struct(ko, '영어'))
+
     def test_claude_lean_command_falls_back_to_plain(self):
         import subprocess, shutil
         cmds = []
@@ -210,7 +224,7 @@ class Tr(unittest.TestCase):
             self.assertEqual(S.call_claude('x'), 'done')
         finally:
             subprocess.run, shutil.which = old_run, old_which
-        self.assertIn('--system-prompt', cmds[0][0]); self.assertIsNotNone(cmds[0][1])
+        self.assertIn('--system-prompt', cmds[0][0]); self.assertIn('--disable-slash-commands', cmds[0][0]); self.assertIn('--strict-mcp-config', cmds[0][0]); self.assertIsNotNone(cmds[0][1])
         self.assertNotIn('--system-prompt', cmds[1][0]); self.assertIsNone(cmds[1][1])
 
     def test_claude_limit_error_is_not_retried(self):

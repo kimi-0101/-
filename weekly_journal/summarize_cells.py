@@ -119,7 +119,9 @@ def _claude_cmds(exe, model):
     import tempfile
     neutral = os.path.join(tempfile.gettempdir(), 'wj_claude_cwd')       # 프로젝트 폴더의 CLAUDE.md·메모리가 매번 딸려 들어가지 않게 빈 폴더에서 부른다
     os.makedirs(neutral, exist_ok=True)
-    lean = (base + ['--system-prompt', LEAN_SYSTEM], neutral)             # 기본 시스템 프롬프트(코딩 도구용)도 쓰지 않는다
+    # 기본 시스템 프롬프트(코딩 도구용)도 쓰지 않고, 스킬 목록(--disable-slash-commands)·MCP 도구 설명(--strict-mcp-config)도 싣지 않는다.
+    # 2026-10-19 실측: 한 줄짜리 호출도 입력이 약 4.95만 토큰이었는데 위 두 옵션으로 약 4천 토큰(1/12)으로 줄었다.
+    lean = (base + ['--system-prompt', LEAN_SYSTEM, '--disable-slash-commands', '--strict-mcp-config'], neutral)
     return [lean, plain]                                                  # 가벼운 방식이 안 되면(구버전·신뢰 문제 등) 예전 방식으로 한 번 더
 
 
@@ -254,7 +256,7 @@ def _texts(x):
 
 def translate_struct(ko_struct, lang_name, model=None):
     """한글 정리본(sec5/sec6/sec7 구조)을 다른 언어로 번역. 구조와 숫자가 원본과 같을 때만 반환, 아니면 None.
-    번역은 Gemini 우선(Claude 사용 한도 절약), 호출 실패나 검사 불합격이면 Claude 로 한 번 더 시도한다."""
+    번역은 Gemini 우선. 걸리면 이유를 알려 Gemini 로 한 번 더(Claude 로 넘기지 않음), Gemini 키가 없을 때만 Claude."""
     prompt = base_prompt = TRANS_PROMPT.format(lang=lang_name) + '\n\n' + json.dumps(ko_struct, ensure_ascii=False)
     def shape(x):
         if isinstance(x, dict):
@@ -266,12 +268,29 @@ def translate_struct(ko_struct, lang_name, model=None):
     want = nums(ko_text)
     months = set(re.findall(r'(\d{1,2})\s*월', ko_text))              # '9월' 은 영어에서 'September' 로 숫자가 사라지는 것이 자연스럽다
 
+    if '두 자릿수' in ko_text:                                          # 'two-digit'·'double-digit'·'2-digit' 어느 쪽으로 번역해도 허용 (HK 9월 영어 번역이 '2' 때문에 계속 걸렸음)
+        want.add('2')
+        months.add('2')
+    man_src, man_ok = set(), set()                                    # '3,693만' 은 영어·중국어에서 36,930,000 / 36.93m / 3,693萬 처럼 단위가 바뀐다 (값은 같음)
+    for m_ in re.findall(r'(\d[\d,]*(?:\.\d+)?)\s*만', ko_text):
+        try:
+            v_ = float(m_.replace(',', '')) * 10000
+        except ValueError:
+            continue
+        man_src.add(m_)
+        man_ok |= {f'{v_:,.0f}', f'{v_ / 1e6:g}', f'{v_ / 1e6:.2f}', f'{v_ / 1e3:,.0f}', f'{v_ / 1e3:g}', f'{v_ / 1e4:,.0f}', m_}
+    pct = set(re.findall(r'(\d[\d,.]*)\s*%', ko_text))                  # 퍼센트 숫자는 빠지면 안 된다
+    spelled = set()                                                   # 'six weeks'·'Singles Day'·'雙11' 처럼 풀어쓰면 숫자가 사라진다 — 의미는 같으므로 빠져도 허용
+    for n_ in want:
+        if re.fullmatch(r'\d{1,2}\.\d{1,2}', n_) or (n_.isdigit() and int(n_) <= 12 and n_ not in pct):
+            spelled.add(n_)
+
     def problem(out):
         """번역이 원본과 어긋난 점. 없으면 ''. 숫자는 새로 생기면 안 되고, 월(月) 숫자만 빠져도 된다."""
         if shape(out) != shape(ko_struct):
             return '구조(키·배열 길이)가 다름'
         got = nums(' '.join(_texts(out)))
-        extra, missing = sorted(got - want), sorted(n for n in want - got if n not in months)
+        extra, missing = sorted(got - want - man_ok), sorted(n for n in want - got if n not in months and n not in man_src and n not in spelled)
         if extra or missing:
             return f'숫자 늘어남 {extra} / 빠짐 {missing}'
         return ''
