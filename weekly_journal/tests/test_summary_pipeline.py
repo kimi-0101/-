@@ -150,6 +150,53 @@ def _map_str(x, f):
     return f(x) if isinstance(x, str) else x
 
 
+class Batch(unittest.TestCase):
+    """부서 묶음을 동시에 정리·검증"""
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        B.DRAFT_DIR = self.tmp
+        B.QUANT_DIR = os.path.join(self.tmp, 'q')
+        self.calls = []
+        S.translate_struct = lambda struct, name: struct
+        self.cells = [{'sec': '6', 'dept': d, 'item': '총평', 'text': f'{d} 원문 가나다라'} for d in ('영업', 'GM', 'EC', '마케팅', 'HR')]
+
+    def test_depts_are_split_into_batches_and_merged(self):
+        import time
+        def summarize(name, period, cells, quant):
+            time.sleep(0.3)
+            self.calls.append(sorted({c['dept'] for c in cells}))
+            return {'sec5': {}, 'sec6': {c['dept']: {'결과': [c['text'], None]} for c in cells}, 'sec7': {}}, [{'x': 1}] if len(cells) == 1 else []
+        S.summarize = summarize
+        S.verify_claims = lambda out, cells, quant='', model=None: [{'위치': 'sec6/%s/결과' % cells[0]['dept'], '문장': 'x', '문제': 'y'}]
+        os.environ['WJ_BATCH'] = '2'
+        try:
+            t0 = time.time()
+            out, flags, warn = B.summarize_verify('홍콩', 'W41', self.cells, '', say=lambda *_: None)
+            dt = time.time() - t0
+        finally:
+            os.environ.pop('WJ_BATCH', None)
+        self.assertEqual(len(self.calls), 3)                                   # 5개 부서 → 2+2+1 묶음
+        self.assertEqual(sorted(sum(self.calls, [])), ['EC', 'GM', 'HR', '마케팅', '영업'])
+        self.assertEqual(sorted(out['sec6']), ['EC', 'GM', 'HR', '마케팅', '영업'])   # 합쳐진 결과
+        self.assertEqual(len(warn), 3); self.assertEqual(len(flags), 1)
+        self.assertLess(dt, 0.8)                                               # 차례로 하면 0.9초 이상
+
+    def test_one_batch_failure_raises_and_nothing_is_saved(self):
+        def summarize(name, period, cells, quant):
+            if any(c['dept'] == 'HR' for c in cells):
+                raise RuntimeError('boom')
+            return {'sec5': {}, 'sec6': {}, 'sec7': {}}, []
+        S.summarize = summarize
+        S.verify_claims = lambda *a, **k: []
+        os.environ['WJ_BATCH'] = '2'
+        try:
+            with self.assertRaises(RuntimeError):
+                B.build('HK', 'W41', cells=self.cells, say=lambda *_: None)
+        finally:
+            os.environ.pop('WJ_BATCH', None)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, 'HK_W41.json')))
+
+
 class Inc(unittest.TestCase):
     """부서 단위 증분 요약: 바뀐 부서만 다시 요약·검증·번역한다"""
     def setUp(self):

@@ -231,6 +231,38 @@ def _save(path, d):
     os.replace(tmp, path)                               # 쓰는 도중 꺼져도 반쪽 파일이 남지 않게 교체 방식으로 저장
 
 
+def summarize_verify(name, period, cells, quant, say=print):
+    """부서를 WJ_BATCH(기본 3)개씩 묶어 묶음마다 정리·검증을 동시에 돌리고 합친다. 한 건이 '가장 느린 묶음 하나'의 시간으로 끝난다.
+    한 묶음이라도 실패하면 예외를 그대로 올린다(반쪽짜리 결과는 저장하지 않는다)."""
+    depts = list(dict.fromkeys(c['dept'] for c in cells))
+    n = max(1, int(os.environ.get('WJ_BATCH', '3')))
+    groups = [depts[i:i + n] for i in range(0, len(depts), n)]
+
+    def one(g):
+        part = [c for c in cells if c['dept'] in g]
+        out, flags = S.summarize(name, period, part, quant)
+        return out, flags, S.verify_claims(out, part, quant)
+    if len(groups) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        ctx = getattr(S._CTX, 'v', '')
+
+        def run(g):
+            S.set_ctx(ctx)
+            return one(g)
+        with ThreadPoolExecutor(max_workers=len(groups)) as ex_:
+            parts = list(ex_.map(run, groups))
+    else:
+        parts = [one(groups[0])]
+    out, flags, warn = {'sec5': {}, 'sec6': {}, 'sec7': {}}, [], []
+    for o, f, w in parts:
+        for sec in out:
+            out[sec].update((o or {}).get(sec) or {})
+        flags += f
+        warn += w
+    say(f'   요약·검증 {len(groups)}묶음(부서 {len(depts)}개) 처리 — 숫자 검수 대상 {len(flags)}건, 사실 검증 경고 {len(warn)}건')
+    return out, flags, warn
+
+
 def build(ent, code, cells=None, force=False, redo_display=False, quant_file=None, say=print):
     """한 법인·한 코드의 정리본을 만든다. 반환: 'made'(새로 만듦) | 'updated'(바뀐 부서만 다시 요약) | 'filled'(번역만 보충) | 'redo'(화면용 다시) | 'skip'(원문 같음) | 'empty'(요약할 글 없음)
     호출 자체가 실패하면 예외를 그대로 올린다(호출하는 쪽이 건너뛸지 정한다)."""
@@ -277,8 +309,7 @@ def build(ent, code, cells=None, force=False, redo_display=False, quant_file=Non
         out_new, flags_new, warn_new = {}, [], []
         if part_cells:
             say(f'{ent} {code}: 바뀐 부서 {changed_d} 만 다시 요약 (그대로 둔 부서 {len(cur) - len(changed_d)}개, 사라진 부서 {removed_d})')
-            out_new, flags_new = S.summarize(name, period, part_cells, quant)
-            warn_new = S.verify_claims(out_new, part_cells, quant)
+            out_new, flags_new, warn_new = summarize_verify(name, period, part_cells, quant, say=say)
         else:
             say(f'{ent} {code}: 사라진 부서 {removed_d} 만 정리 (AI 호출 없음)')
         out = {}
@@ -297,9 +328,7 @@ def build(ent, code, cells=None, force=False, redo_display=False, quant_file=Non
         _log_detail(say, dropped, warn_new)
         return 'updated'
 
-    out, flags = S.summarize(name, period, cells, quant)
-    say(f'{ent} {code}: 숫자 검수 대상 {len(flags)}건 — 사실 검증 중…')
-    warn = S.verify_claims(out, cells, quant)
+    out, flags, warn = summarize_verify(name, period, cells, quant, say=say)
     disp, dropped = build_display_i18n(out, flags, warn, cells, quant, say=say)
     _save(path, {'ent': ent, 'code': code, 'made_at': now, 'hash': h, 'dept_hash': cur,
                  'quant': quant, 'cells': cells, 'out': out, 'flags': flags, 'warn': warn, 'display': disp, 'dropped': dropped})

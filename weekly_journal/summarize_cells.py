@@ -69,6 +69,7 @@ def build_prompt(ent, period, cells, quant_text):
 import threading
 _ULOCK = threading.Lock()
 _CTX = threading.local()
+_CLAUDE_SEM = threading.Semaphore(int(os.environ.get('WJ_MAX_CLAUDE', '4')))      # claude 를 동시에 몇 개까지 띄울지(여러 건·여러 묶음을 한꺼번에 돌려도 이 수를 넘지 않는다)
 
 
 def set_ctx(text):
@@ -148,7 +149,8 @@ def call_claude(prompt, model=None, timeout=300, label=''):
     tries = _claude_cmds(exe, model)
     for k, (cmd, cwd) in enumerate(tries):
         t0 = time.time()
-        r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, encoding='utf-8', env=env, timeout=timeout, cwd=cwd)
+        with _CLAUDE_SEM:
+            r = subprocess.run(cmd, input=prompt, capture_output=True, text=True, encoding='utf-8', env=env, timeout=timeout, cwd=cwd)
         if r.returncode == 0:
             return _meter(r.stdout, label, time.time() - t0)
         err = (r.stderr or r.stdout)[-300:]
