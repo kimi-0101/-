@@ -80,6 +80,34 @@ def call_claude(prompt, model=None, timeout=300):
     return r.stdout
 
 
+GEMINI_MODEL = 'gemini-2.5-flash'
+
+
+def _gemini_key():
+    k = os.environ.get('GEMINI_API_KEY', '').strip()
+    if k:
+        return k
+    p = os.path.join(os.path.dirname(HERE), 'apps_script', 'weekly_journal', 'gemini_key.txt')
+    return open(p, encoding='utf-8').read().strip() if os.path.exists(p) else ''
+
+
+def call_gemini(prompt, timeout=120):
+    """번역용 Gemini 호출(무료 키). 키가 없거나 실패하면 예외 → 호출하는 쪽이 Claude 로 넘어간다."""
+    import urllib.request
+    key = _gemini_key()
+    if not key:
+        raise RuntimeError('gemini 키 없음')
+    model = os.environ.get('GEMINI_MODEL', GEMINI_MODEL)
+    url = f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent'
+    body = json.dumps({'contents': [{'parts': [{'text': prompt}]}], 'generationConfig': {'temperature': 0, 'responseMimeType': 'application/json'}}).encode('utf-8')
+    req = urllib.request.Request(url, data=body, headers={'Content-Type': 'application/json', 'x-goog-api-key': key})
+    res = json.load(urllib.request.urlopen(req, timeout=timeout))
+    try:
+        return res['candidates'][0]['content']['parts'][0]['text']
+    except (KeyError, IndexError):
+        raise RuntimeError('gemini 응답 없음: ' + json.dumps(res, ensure_ascii=False)[:200])
+
+
 def parse_json(txt):
     m = re.search(r'\{.*\}', txt, re.S)
     if not m:
@@ -156,17 +184,36 @@ TRANS_PROMPT = """아래는 한국어 영업일지 정리본(JSON)이다. 문자
 - 업무 보고서 문체로 간결하게."""
 
 
+def _texts(x):
+    if isinstance(x, dict):
+        return [t for v in x.values() for t in _texts(v)]
+    if isinstance(x, list):
+        return [t for v in x for t in _texts(v)]
+    return [x] if isinstance(x, str) else []
+
+
 def translate_struct(ko_struct, lang_name, model=None):
-    """승인된 한글 정리본(sec5/sec6/sec7 구조)을 다른 언어로 번역. 구조가 같을 때만 반환, 아니면 None."""
+    """한글 정리본(sec5/sec6/sec7 구조)을 다른 언어로 번역. 구조와 숫자가 원본과 같을 때만 반환, 아니면 None.
+    번역은 Gemini 우선(Claude 사용 한도 절약), 호출 실패나 검사 불합격이면 Claude 로 한 번 더 시도한다."""
     prompt = TRANS_PROMPT.format(lang=lang_name) + '\n\n' + json.dumps(ko_struct, ensure_ascii=False)
-    out = parse_json(call_claude(prompt, model=model))
     def shape(x):
         if isinstance(x, dict):
             return {k: shape(v) for k, v in x.items()}
         if isinstance(x, list):
             return [shape(v) for v in x]
         return None
-    return out if shape(out) == shape(ko_struct) else None
+    want = nums(' '.join(_texts(ko_struct)))
+    def ok(out):
+        return shape(out) == shape(ko_struct) and nums(' '.join(_texts(out))) == want
+    try:
+        out = parse_json(call_gemini(prompt))
+        if ok(out):
+            return out
+        print('[알림] Gemini 번역이 구조·숫자 검사에 걸려 Claude 로 다시 번역')
+    except Exception as ex:
+        print(f'[알림] Gemini 번역 불가 → Claude 로 번역: {ex!r}'[:200])
+    out = parse_json(call_claude(prompt, model=model))
+    return out if ok(out) else None
 
 
 def demo_tw():

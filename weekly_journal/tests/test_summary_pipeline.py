@@ -8,6 +8,8 @@ sys.path.insert(0, os.path.dirname(HERE))
 import build_summary_draft as B
 import summarize_cells as S
 
+REAL_TRANSLATE = S.translate_struct
+
 CELLS = [{'sec': 'sec6', 'dept': 'GM', 'item': '결과', 'text': '매출 100만 달성'},
          {'sec': 'sec7', 'dept': 'GM', 'item': '전략', 'text': '11월 행사 2회 진행'}]
 
@@ -100,6 +102,30 @@ class T(unittest.TestCase):
         import summary_render as SR
         h = SR._cards('sec6', {'sec6': {'영업': {'결과': [['가', '나'], None]}}}, 'ko')
         self.assertEqual(h.count('class="cr"'), 2)
+
+
+class Tr(unittest.TestCase):
+    KO = {'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['2단계 20% 확대']}}
+
+    def setUp(self):
+        S.translate_struct = REAL_TRANSLATE
+
+    def test_gemini_ok_no_claude(self):
+        S.call_gemini = lambda p, timeout=120: json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['Stage 2, 20% expansion']}})
+        S.call_claude = lambda p, model=None: (_ for _ in ()).throw(AssertionError('claude'))
+        self.assertTrue(S.translate_struct(self.KO, '영어'))
+
+    def test_digit_mismatch_falls_back_to_claude(self):
+        S.call_gemini = lambda p, timeout=120: json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['Stage two, 20% expansion']}})
+        S.call_claude = lambda p, model=None: json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['Stage 2, 20% expansion']}})
+        self.assertEqual(S.translate_struct(self.KO, '영어')['sec7']['GM'], ['Stage 2, 20% expansion'])
+
+    def test_gemini_error_and_claude_bad_returns_none(self):
+        def boom(p, timeout=120):
+            raise RuntimeError('429')
+        S.call_gemini = boom
+        S.call_claude = lambda p, model=None: json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['no digits']}})
+        self.assertIsNone(S.translate_struct(self.KO, '영어'))
 
 
 if __name__ == '__main__':
