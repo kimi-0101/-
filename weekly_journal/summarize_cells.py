@@ -9,6 +9,7 @@ AI 호출은 PC 의 `claude -p` (도구 없음, 세션 저장 없음). 숫자는
 사용:  python weekly_journal/summarize_cells.py --demo-tw        (시연: 대만 9월 샘플 원문으로 실행)
 """
 import argparse
+import copy
 import json
 import os
 import re
@@ -55,7 +56,8 @@ STYLE = """너는 영업일지 SUMMARY 정리 담당이다. 부서가 쓴 원문
 
 
 def nums(s):
-    return set(re.findall(r'\d[\d,.]*\d|\d', s or ''))
+    """글 속 숫자 모음. 천 단위 쉼표는 없앤다('6,800' 과 '6800' 은 같은 숫자)."""
+    return {x.replace(',', '') for x in re.findall(r'\d[\d,.]*\d|\d', s or '')}
 
 
 def build_prompt(ent, period, cells, quant_text):
@@ -295,6 +297,121 @@ def verify_claims(out, cells, quant_text='', model=None):
     return json.loads(m.group(0)) if m else []
 
 
+REPAIR_PROMPT = """너는 영업일지 정리본 교정 담당이다. 아래 [수정 대상]의 각 문장은 사실 검증에서 문제가 지적됐다.
+[원문]에 있는 표현과 사실만 사용해, 지적된 문제를 없앤 문장으로 다시 쓴다.
+- 지적된 평가·해석·일반화·시제 변경·범위 확대를 넣지 않는다. 숫자는 원문·정량에 있는 값만 쓴다.
+- 문체는 음슴체(명사형 종결). 한 문장으로 간결하게. 원문에 나온 말을 가깝게 따른다.
+- 원문만으로는 쓸 수 없으면 null.
+설명 없이 JSON 한 개만: {"1": "다시 쓴 문장 또는 null", "2": "..."}  (번호는 [수정 대상]의 번호)"""
+
+
+def _n(t):
+    return ''.join(str(t or '').split())
+
+
+def _base(key):
+    return re.split(r'[（(]', str(key or ''))[0].strip()
+
+
+def _core_lines(v):
+    core = v[0] if v else None
+    return [x for x in (core if isinstance(core, list) else [core]) if x]
+
+
+def _locate(out, w):
+    """경고 하나가 가리키는 줄 → [(섹션, 부서키, 라벨, 줄번호)]. 줄번호 None 은 라벨 전체. 찾지 못하면 []."""
+    pos = str(w.get('위치', '')).split('/')
+    sec, dept = pos[0], (pos[1] if len(pos) > 1 else '')
+    sent = _n(w.get('문장'))
+    hits = []
+    if sec in ('sec5', 'sec6'):
+        label = pos[2] if len(pos) > 2 else None
+        for lab, v in (((out.get(sec) or {}).get(dept)) or {}).items():
+            if (label and lab != label) or not v:
+                continue
+            lines = _core_lines(v)
+            idx = [i for i, l in enumerate(lines) if sent and (sent in _n(l) or _n(l) in sent)]
+            if idx:
+                hits += [(sec, dept, lab, i) for i in idx]
+            elif label:
+                hits.append((sec, dept, lab, None))
+    elif sec == 'sec7' and sent:
+        for i, l in enumerate((out.get('sec7') or {}).get(dept) or []):
+            if l and (sent in _n(l) or _n(l) in sent):
+                hits.append((sec, dept, None, i))
+    return hits
+
+
+def _get_line(out, loc):
+    sec, dept, lab, i = loc
+    if sec == 'sec7':
+        return out['sec7'][dept][i]
+    lines = _core_lines(out[sec][dept][lab])
+    return ' / '.join(lines) if i is None else lines[i]
+
+
+def _set_line(out, loc, new):
+    sec, dept, lab, i = loc
+    if sec == 'sec7':
+        out['sec7'][dept][i] = new
+        return
+    v = out[sec][dept][lab]
+    core = v[0]
+    if i is None or not isinstance(core, list):
+        v[0] = new
+    else:
+        core[i] = new
+
+
+def _subset(out, locs):
+    sub = {'sec5': {}, 'sec6': {}, 'sec7': {}}
+    for sec, dept, lab, i in locs:
+        if sec == 'sec7':
+            sub['sec7'].setdefault(dept, []).append(out['sec7'][dept][i])
+        else:
+            lines = _core_lines(out[sec][dept][lab])
+            sub[sec].setdefault(dept, {}).setdefault(lab, [[], None])[0].extend(lines if i is None else [lines[i]])
+    for sec in ('sec5', 'sec6'):
+        for labs in sub[sec].values():
+            for v in labs.values():
+                if len(v[0]) == 1:
+                    v[0] = v[0][0]
+    return sub
+
+
+def repair_flagged(out, warns, cells, quant_text='', model=None):
+    """검증이 지적한 줄을 '버리지 않고' 지적 이유와 원문을 보여 주며 다시 쓰게 한 뒤, 고친 줄만 다시 검증한다.
+    반환: (고친 out, 남은 경고, 고친 줄 수).  고치지 못했거나 다시 검증에서도 걸리면 경고가 남아 화면에서 빠진다(이전과 같음)."""
+    items, seen = [], set()
+    for w in warns or []:
+        for loc in _locate(out, w):
+            if loc not in seen:
+                seen.add(loc)
+                items.append((loc, _get_line(out, loc), str(w.get('문제', ''))))
+    if not items:
+        return out, list(warns or []), 0
+    depts = {_base(l[1]) for l, _, _ in items}
+    src = '\n'.join(f"- 섹션{c['sec']} / {c['dept']} / {c['item']}: {c['text']}" for c in cells if c['dept'] in depts)
+    todo = '\n'.join(f'{n}. 위치 {"/".join(str(x) for x in loc[:3] if x)} | 현재 문장: {cur} | 지적: {why}' for n, (loc, cur, why) in enumerate(items, 1))
+    prompt = '\n\n'.join([REPAIR_PROMPT, '[정량]\n' + (quant_text.strip() or '(없음)'), '[원문]\n' + src, '[수정 대상]\n' + todo])
+    txt = call_gemini(prompt, timeout=180) if _engine('WJ_SUMMARIZER') == 'gemini' else call_claude(prompt, model=model, label='보정')
+    fixes = parse_json(txt)
+    have = allowed_numbers([c for c in cells if c['dept'] in depts], quant_text)
+    new_out, fixed = copy.deepcopy(out), []
+    for no, (loc, cur, _why) in enumerate(items, 1):
+        new = fixes.get(str(no))
+        if not isinstance(new, str) or not new.strip() or _n(new) == _n(cur) or any(x not in have for x in nums(new)):
+            continue                                                  # 못 고쳤거나, 원문에 없는 숫자가 생긴 수정은 버린다
+        _set_line(new_out, loc, new.strip())
+        fixed.append(loc)
+    if not fixed:
+        return out, list(warns or []), 0
+    again = verify_claims(_subset(new_out, fixed), [c for c in cells if c['dept'] in {_base(l[1]) for l in fixed}], quant_text)
+    fixed_set = set(fixed)
+    left = [w for w in (warns or []) if not any(l in fixed_set for l in _locate(out, w))] + list(again)
+    return new_out, left, len(fixed)
+
+
 def summarize(ent, period, cells, quant_text='', model=None):
     """WJ_SUMMARIZER = claude(기본) | gemini"""
     prompt = build_prompt(ent, period, cells, quant_text)
@@ -340,8 +457,8 @@ def translation_checker(ko_struct):
             v_ = float(m_.replace(',', '')) * 10000
         except ValueError:
             continue
-        man_src.add(m_)
-        man_ok |= {f'{v_:,.0f}', f'{v_ / 1e6:g}', f'{v_ / 1e6:.2f}', f'{v_ / 1e3:,.0f}', f'{v_ / 1e3:g}', f'{v_ / 1e4:,.0f}', m_}
+        man_src.add(m_.replace(',', ''))
+        man_ok |= {x.replace(',', '') for x in (f'{v_:,.0f}', f'{v_ / 1e6:g}', f'{v_ / 1e6:.2f}', f'{v_ / 1e3:,.0f}', f'{v_ / 1e3:g}', f'{v_ / 1e4:,.0f}', m_)}
     pct = set(re.findall(r'(\d[\d,.]*)\s*%', ko_text))                  # 퍼센트 숫자는 빠지면 안 된다
     spelled = set()                                                   # 'six weeks'·'Singles Day'·'雙11' 처럼 풀어쓰면 숫자가 사라진다 — 의미는 같으므로 빠져도 허용
     for n_ in want:
@@ -389,10 +506,13 @@ def translate_struct(ko_struct, lang_name, model=None):
             return out
         print(f'[알림] {who} 번역이 검사에 걸림({attempt}/2) — {why}')
         prompt = base_prompt + f'\n\n[이전 번역의 문제] {why}. 숫자와 구조를 원문과 똑같이 맞춰 다시 번역한다.'
-    if not key_missing:
-        print(f'[알림] 번역을 채우지 못함 — {who} 재시도 한계. 다른 번역기로 넘기지 않음(사용량 절약). 다음 실행에서 번역만 다시 시도합니다.')
+    fallback = os.environ.get('WJ_CLAUDE_FALLBACK', '1') != '0'
+    if not key_missing and not (fallback and not use_claude):
+        print(f'[알림] 번역을 채우지 못함 — {who} 재시도 한계. 다음 실행에서 번역만 다시 시도합니다.')
         return None
-    out = parse_json(call_claude(base_prompt, model=model, label=f'번역({lang_name[:2]})'))               # Gemini 키가 없을 때만 Claude 로 번역
+    if not key_missing:
+        print(f'[알림] Gemini 로 {lang_name} 번역을 못 채워 Claude 로 번역합니다')
+    out = parse_json(call_claude(base_prompt, model=model, label=f'번역({lang_name[:2]})'))               # Gemini 키가 없거나 끝내 못 한 경우에만 Claude 로 번역
     why = problem(out)
     if why:
         print(f'[알림] Claude 번역이 검사에 걸려 버림 — {why}')

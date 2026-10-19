@@ -54,6 +54,20 @@ class T(unittest.TestCase):
         self.assertLess(time.time() - t0, 0.55)                    # 순서대로면 0.6초 이상
         self.assertEqual(sorted(res), ['en', 'ko', 'zh'])
 
+    def test_comma_and_plain_numbers_are_the_same_number(self):
+        self.assertEqual(S.nums('6,800 와 6800 그리고 10,800'), {'6800', '10800'})
+        cells = [{'sec': '5', 'dept': '영업', 'item': '경쟁사 동향', 'text': '노스페이스 6,800 대만달러 이상, AAPE 10,800'}]
+        out = {'sec5': {'영업': {'동향': [['노스페이스 6800대만달러 이상', 'AAPE 10800대만달러'], None]}}, 'sec6': {}, 'sec7': {}}
+        self.assertEqual(S.check_numbers(out, cells, ''), [])
+        disp, dropped = B.make_display(out, [], [], cells, '')
+        self.assertEqual(dropped, [])
+
+    def test_dropped_line_reason_is_logged(self):
+        cells = [{'sec': '5', 'dept': '영업', 'item': '경쟁사 동향', 'text': '노스페이스 6,800 대만달러'}]
+        out = {'sec5': {'영업': {'동향': [['노스페이스 6800대만달러', '출처 없는 9999 증가'], None]}}, 'sec6': {}, 'sec7': {}}
+        disp, dropped = B.make_display(out, [], [], cells, '')
+        self.assertEqual(len(dropped), 1); self.assertIn('숫자', dropped[0]); self.assertIn('9999', dropped[0])
+
     def test_auto_codes(self):
         D = datetime.date
         self.assertEqual(B.auto_codes(41, 2026, today=D(2026, 10, 19)), ['W41', 'M10'])          # 중순 이후엔 지난 달을 다시 보지 않는다
@@ -168,13 +182,14 @@ class Batch(unittest.TestCase):
             return {'sec5': {}, 'sec6': {c['dept']: {'결과': [c['text'], None]} for c in cells}, 'sec7': {}}, [{'x': 1}] if len(cells) == 1 else []
         S.summarize = summarize
         S.verify_claims = lambda out, cells, quant='', model=None: [{'위치': 'sec6/%s/결과' % cells[0]['dept'], '문장': 'x', '문제': 'y'}]
+        os.environ['WJ_REPAIR'] = '0'
         os.environ['WJ_BATCH'] = '2'
         try:
             t0 = time.time()
             out, flags, warn = B.summarize_verify('홍콩', 'W41', self.cells, '', say=lambda *_: None)
             dt = time.time() - t0
         finally:
-            os.environ.pop('WJ_BATCH', None)
+            os.environ.pop('WJ_BATCH', None); os.environ.pop('WJ_REPAIR', None)
         self.assertEqual(len(self.calls), 3)                                   # 5개 부서 → 2+2+1 묶음
         self.assertEqual(sorted(sum(self.calls, [])), ['EC', 'GM', 'HR', '마케팅', '영업'])
         self.assertEqual(sorted(out['sec6']), ['EC', 'GM', 'HR', '마케팅', '영업'])   # 합쳐진 결과
@@ -195,6 +210,75 @@ class Batch(unittest.TestCase):
         finally:
             os.environ.pop('WJ_BATCH', None)
         self.assertFalse(os.path.exists(os.path.join(self.tmp, 'HK_W41.json')))
+
+
+
+class Repair(unittest.TestCase):
+    """검증이 지적한 줄을 버리지 않고 다시 쓰게 한다"""
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        B.DRAFT_DIR = self.tmp
+        S.GEMINI_RETRY_WAIT = 0
+        self.cells = [{'sec': '6', 'dept': '영업', 'item': '총평', 'text': '시티게이트 +2% (황금연휴 전 관광객 감소), 요호 +8%'},
+                      {'sec': '7', 'dept': '영업', 'item': '향후전략', 'text': '10월 프로모션 진행 11월 재고 정리'}]
+        self.out = {'sec5': {}, 'sec6': {'영업': {'원인': [['시티게이트 성장 둔화는 황금연휴 전 관광객 감소', '요호는 북행 여행객 증가'], None]}},
+                    'sec7': {'영업': ['10월 프로모션 진행', '11월 재고 정리 대성공']}}
+        self.warns = [{'위치': 'sec6/영업/원인/핵심', '문장': '시티게이트 성장 둔화는 황금연휴 전 관광객 감소', '문제': "'성장 둔화' 평가는 원문에 없음"},
+                      {'위치': 'sec7/영업', '문장': '11월 재고 정리 대성공', '문제': "'대성공' 은 원문에 없음"}]
+        self.calls = []
+
+    def _claude(self, answers):
+        def f(p, model=None, **kw):
+            self.calls.append(p)
+            return json.dumps(answers)
+        S.call_claude = f
+
+    def test_flagged_lines_are_rewritten_and_reverified(self):
+        self._claude({'1': '시티게이트 +2%, 황금연휴 전 관광객 감소', '2': '11월 재고 정리'})
+        S.verify_claims = lambda out, cells, quant='', model=None: []
+        out, left, n = S.repair_flagged(self.out, self.warns, self.cells)
+        self.assertEqual(n, 2); self.assertEqual(left, [])
+        self.assertEqual(out['sec6']['영업']['원인'][0], ['시티게이트 +2%, 황금연휴 전 관광객 감소', '요호는 북행 여행객 증가'])   # 다른 줄은 그대로
+        self.assertEqual(out['sec7']['영업'], ['10월 프로모션 진행', '11월 재고 정리'])
+        self.assertIn('성장 둔화', json.dumps(self.out, ensure_ascii=False))                                               # 원본은 바뀌지 않는다
+        self.assertEqual(len(self.calls), 1)
+
+    def test_rewrite_with_new_number_or_null_is_rejected(self):
+        self._claude({'1': '시티게이트 +9%', '2': None})
+        S.verify_claims = lambda *a, **k: []
+        out, left, n = S.repair_flagged(self.out, self.warns, self.cells)
+        self.assertEqual(n, 0); self.assertEqual(len(left), 2)
+
+    def test_reverification_failure_keeps_warning(self):
+        self._claude({'1': '시티게이트 성장 부진', '2': '11월 재고 정리'})
+        S.verify_claims = lambda out, cells, quant='', model=None: [{'위치': 'sec6/영업/원인/핵심', '문장': '시티게이트 성장 부진', '문제': '평가'}]
+        out, left, n = S.repair_flagged(self.out, self.warns, self.cells)
+        self.assertEqual(n, 2)
+        self.assertEqual([w['문장'] for w in left], ['시티게이트 성장 부진'])
+
+    def test_unlocatable_warning_is_left_alone_without_calling_ai(self):
+        self._claude({})
+        out, left, n = S.repair_flagged(self.out, [{'위치': 'sec6/없는부서/결과', '문장': 'x', '문제': 'y'}], self.cells)
+        self.assertEqual((n, len(left), len(self.calls)), (0, 1, 0))
+
+    def test_repair_existing_updates_draft_translations_only_for_changed_lines(self):
+        self._claude({'1': '시티게이트 +2%, 황금연휴 전 관광객 감소', '2': '11월 재고 정리'})
+        S.verify_claims = lambda *a, **k: []
+        seen = []
+        def tr(struct, name):
+            seen.append(struct)
+            return _map_str(struct, lambda s: f'{name[:2]}|{s}')
+        S.translate_struct = tr
+        ko, dropped = B.make_display(self.out, [], self.warns, self.cells, '')
+        draft = {'ent': 'HK', 'code': 'M09', 'cells': self.cells, 'quant': '', 'out': self.out, 'flags': [], 'warn': self.warns, 'dropped': dropped,
+                 'display': {'ko': ko, 'en': _map_str(ko, lambda s: f'영어|{s}'), 'zh': _map_str(ko, lambda s: f'중국|{s}')}}
+        json.dump(draft, open(os.path.join(self.tmp, 'HK_M09.json'), 'w', encoding='utf-8'), ensure_ascii=False)
+        self.assertEqual(B.repair_existing('HK', 'M09', say=lambda *_: None), 'repaired')
+        d = json.load(open(os.path.join(self.tmp, 'HK_M09.json'), encoding='utf-8'))
+        self.assertEqual(d['warn'], []); self.assertEqual(d['dropped'], [])
+        self.assertIn('황금연휴', json.dumps(d['display']['ko'], ensure_ascii=False))
+        self.assertEqual(sorted(d['display']), ['en', 'ko', 'zh'])
+        self.assertTrue(all(isinstance(s, dict) for s in seen) and len(seen) == 2)           # 영어·중국어 각각 한 번(바뀐 줄만)
 
 
 class Inc(unittest.TestCase):
@@ -401,17 +485,26 @@ class Tr(unittest.TestCase):
         self.assertIn('이전 번역의 문제', seen[1])
         self.assertEqual(self.claude_calls, 0)
 
-    def test_gemini_keeps_failing_returns_none_without_claude(self):
+    def test_gemini_keeps_failing_falls_back_to_claude_once(self):
         S.call_gemini = lambda p, timeout=120: self.BAD
-        self.assertIsNone(S.translate_struct(self.KO, '영어'))
-        self.assertEqual(self.claude_calls, 0)
+        self.assertTrue(S.translate_struct(self.KO, '영어'))
+        self.assertEqual(self.claude_calls, 1)
 
-    def test_gemini_error_twice_returns_none_without_claude(self):
+    def test_gemini_error_twice_falls_back_to_claude(self):
         def boom(p, timeout=120):
-            raise RuntimeError('429')
+            raise RuntimeError('gemini HTTP 429')
         S.call_gemini = boom
-        self.assertIsNone(S.translate_struct(self.KO, '영어'))
-        self.assertEqual(self.claude_calls, 0)
+        self.assertTrue(S.translate_struct(self.KO, '영어'))
+        self.assertEqual(self.claude_calls, 1)
+
+    def test_fallback_can_be_turned_off(self):
+        os.environ['WJ_CLAUDE_FALLBACK'] = '0'
+        try:
+            S.call_gemini = lambda p, timeout=120: self.BAD
+            self.assertIsNone(S.translate_struct(self.KO, '영어'))
+            self.assertEqual(self.claude_calls, 0)
+        finally:
+            os.environ.pop('WJ_CLAUDE_FALLBACK', None)
 
     def test_no_gemini_key_uses_claude(self):
         def nokey(p, timeout=120):

@@ -97,6 +97,17 @@ def _line_bad(t, have, bad_sent):
     return any(n not in have for n in S.nums(t)) or any(x and (x == nt or x in nt or nt in x) for x in bad_sent)
 
 
+def _why(t, have, bad_sent):
+    """줄을 뺀 이유(로그용)"""
+    miss = sorted(n for n in S.nums(t) if n not in have)
+    if miss:
+        return f'숫자 {miss} 가 원문·정량에 없음'
+    nt = _norm(t)
+    if any(x and (x == nt or x in nt or nt in x) for x in bad_sent):
+        return '사실 검증 경고'
+    return '라벨 전체에 경고'
+
+
 def make_display(out, flags, warn, cells, quant):
     """화면용: 라벨마다 핵심 한 줄만. 숫자 대조·사실 검증에 걸린 줄은 뺀다. 전략(7번)은 항목마다 숫자 대조 + 사실 검증에 걸린 문장은 뺀다."""
     bad = {(f[0], f[1], f[2]) for f in flags}
@@ -128,10 +139,10 @@ def make_display(out, flags, warn, cells, quant):
                         ok = []
                     for t in lines:
                         if t not in ok:
-                            dropped.append(f'{sk}/{dept}/{lab}/{t[:20]}')
+                            dropped.append(f'{sk}/{dept}/{lab}/{t[:20]} ← {_why(t, have, bad_sent)}')
                     lines = ok
                 elif label_bad:
-                    dropped.append(f'{sk}/{dept}/{lab}')
+                    dropped.append(f'{sk}/{dept}/{lab} ← {_why(lines[0], have, bad_sent)}')
                     continue
                 if lines:
                     row[lab] = [lines if len(lines) > 1 else lines[0], None]
@@ -145,7 +156,7 @@ def make_display(out, flags, warn, cells, quant):
             nt = _norm(t)
             flagged = any(s and (s == nt or s in nt or nt in s) for s in bad_sent)       # 사실 검증이 지목한 문장(7번 위치 표기가 달라도 문장으로 찾는다)
             if any(n not in have for n in S.nums(t)) or ('sec7', dept, None) in bad or flagged:
-                dropped.append(f'sec7/{dept}/{t[:20]}')
+                dropped.append(f'sec7/{dept}/{t[:20]} ← {_why(t, have, bad_sent)}')
                 continue
             keep.append(t)
         if keep:
@@ -241,7 +252,15 @@ def summarize_verify(name, period, cells, quant, say=print):
     def one(g):
         part = [c for c in cells if c['dept'] in g]
         out, flags = S.summarize(name, period, part, quant)
-        return out, flags, S.verify_claims(out, part, quant)
+        warn = S.verify_claims(out, part, quant)
+        if warn and os.environ.get('WJ_REPAIR', '1') != '0':           # 지적된 줄은 버리지 않고 지적 이유를 알려 주며 다시 쓰게 한다
+            try:
+                out, warn, n = S.repair_flagged(out, warn, part, quant)
+                if n:
+                    flags = S.check_numbers(out, part, quant)
+            except Exception as ex:
+                say(f'[경고] 보정 단계 실패 — 지적된 줄은 그대로 뺍니다: {ex!r}')
+        return out, flags, warn
     if len(groups) > 1:
         from concurrent.futures import ThreadPoolExecutor
         ctx = getattr(S._CTX, 'v', '')
@@ -337,6 +356,26 @@ def build(ent, code, cells=None, force=False, redo_display=False, quant_file=Non
     return 'made'
 
 
+def repair_existing(ent, code, say=print):
+    """이미 저장된 정리본의 '검증에서 지적된 줄'을 다시 쓰게 하고(버리지 않고), 바뀐 줄만 다시 번역하며, 빠진 번역도 채운다. 시트는 읽지 않는다.
+    반환: 'repaired' | 'none'(저장본 없음)"""
+    path = os.path.join(DRAFT_DIR, f'{ent}_{code}.json')
+    if not os.path.exists(path):
+        return 'none'
+    old = json.load(open(path, encoding='utf-8'))
+    cells = [c for c in old.get('cells', []) if len(c['text']) > 3]
+    quant = old.get('quant', '')
+    out, warn, n = S.repair_flagged(old['out'], old.get('warn', []), cells, quant)
+    flags = S.check_numbers(out, cells, quant)
+    disp, dropped = build_display_i18n(out, flags, warn, cells, quant, have=old.get('display'), say=say, old_ko=(old.get('display') or {}).get('ko'))
+    old.update(out=out, flags=flags, warn=warn, display=disp, dropped=dropped, dept_hash=old.get('dept_hash') or dept_hashes(cells, quant),
+               made_at=datetime.datetime.now().strftime('%Y-%m-%d %H:%M'))
+    _save(path, old)
+    say(f'보정 {ent} {code}: 고친 줄 {n}개 / 아직 뺀 줄 {len(dropped)}개 / 사실 검증 경고 {len(warn)}건 / 번역 빠짐 {missing_langs(disp)}')
+    _log_detail(say, dropped, warn)
+    return 'repaired'
+
+
 def _log_detail(say, dropped, warn):
     for d_ in dropped:
         say(f'   뺌: {d_}')
@@ -421,12 +460,27 @@ def main(argv=None):
     ap.add_argument('--quant-file')
     ap.add_argument('--force', action='store_true')
     ap.add_argument('--workers', type=int, default=3, help='동시에 돌릴 건수(법인×코드). 1 이면 차례로')
+    ap.add_argument('--repair', action='store_true', help='저장된 정리본에서 검증이 지적한 줄을 다시 쓰고(버리지 않고), 바뀐 줄만 다시 번역하며 빠진 번역도 채운다 (--code 필요, --ent 없으면 양쪽)')
     ap.add_argument('--redo-display', action='store_true', help='저장된 정리본에서 화면용(핵심+번역)만 다시 만든다')
     a = ap.parse_args(argv)
     if a.auto_week:
         res = run_all([a.ent] if a.ent else ['HK', 'TW'], auto_codes(a.auto_week), force=a.force, workers=a.workers)
         print(json.dumps(res, ensure_ascii=False))
         return 1 if any(v in ('failed', 'read-failed') for v in res.values()) else 0
+    if a.repair:
+        if not a.code:
+            ap.error('--repair 는 --code 가 필요합니다')
+        S.usage_reset()
+        rc = 0
+        for ent in ([a.ent] if a.ent else ['HK', 'TW']):
+            S.set_ctx(f'{ent} {a.code}')
+            try:
+                print(ent, a.code, repair_existing(ent, a.code))
+            except Exception as ex:
+                rc = 1
+                print(f'[경고] {ent} {a.code} 보정 실패 — {ex!r}')
+        print('[사용량] ' + S.usage_report())
+        return rc
     if not (a.ent and a.code):
         ap.error('--ent 와 --code (또는 --auto-week) 가 필요합니다')
     st = build(a.ent, a.code, force=a.force, redo_display=a.redo_display, quant_file=a.quant_file)
