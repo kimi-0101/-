@@ -19,9 +19,12 @@ DEPT_NAMES = {'GM': ('GM', 'GM'), 'GM(HQ 요청)': ('GM (HQ requests)', 'GM（�
               'EC': ('EC', 'EC'), 'VMD': ('VMD', 'VMD'), '마케팅': ('Marketing', '行銷'), '물류': ('Logistics', '物流'), 'HR': ('HR', '人資'), '회계/재무': ('Finance', '財務')}
 SEC_LABELS = {'sec5': ('동향', '대응'), 'sec6': ('결과', '원인', '조치')}
 
-CSS = ('<style>.smt{margin:0 0 10px}.smt .bd{display:block;width:fit-content;margin-top:5px;padding:2px 10px;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:6px;color:#111;font-size:12.5px;font-weight:700;line-height:1.5;white-space:nowrap}'
+CSS = ('<style>.smt{margin:0 0 10px}'
+       '.smt .ln{display:flex;gap:10px;align-items:flex-start;margin:0 0 6px}.smt .ln:last-child{margin-bottom:0}'
+       '.smt .bd{flex:0 0 auto;min-width:46px;box-sizing:border-box;text-align:center;margin-top:2px;padding:1px 10px;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:6px;color:#111;font-size:12.5px;font-weight:700;line-height:1.6;white-space:nowrap}'
+       '.smt .tx{flex:1 1 auto;min-width:0}.smt .tx p{margin:0 0 4px}.smt .tx p:last-child{margin-bottom:0}'
        '.smt b.k{background:#fff3b0;color:#111;padding:0 2px;border-radius:2px;font-weight:inherit}'
-       '.smt td.sv p{margin:0 0 4px}.smt td.sv p:last-child{margin-bottom:0}'
+       '.smt td.sv>p{margin:0 0 4px}.smt td.sv>p:last-child{margin-bottom:0}'
        'details.raw{margin:8px 0 0}details.raw>summary{cursor:pointer;color:#6b7280;font-size:12.5px;padding:4px 0}'
        '@media (prefers-color-scheme:dark){.smt b.k{background:#4a4220;color:#fff}.smt .bd{background:#2a2d33;border-color:#3a3e45;color:#f3f4f6}}</style>')
 STRAT_LABEL = {'ko': '향후전략', 'en': 'Next strategy', 'zh': '後續策略'}
@@ -63,7 +66,8 @@ def _label(lab, lang):
 
 
 def _rows(sec_key, data, lang):
-    """부서·항목(왼쪽) | 내용(오른쪽) 한 줄짜리 행. 기존 5·6·7번 표(.t3)와 같은 모양이다. 같은 맥락은 한 줄, 다른 맥락은 줄을 나눠 보인다."""
+    """부서마다 한 행: 왼쪽은 부서명만, 오른쪽에는 '[배지] 내용' 줄이 항목 수만큼 쌓인다(기존 5·6·7번 표(.t3)와 같은 모양).
+    같은 맥락은 한 줄, 다른 맥락은 한 배지 아래에서 줄을 나눠 보인다."""
     sec = (data or {}).get(sec_key) or {}
     depts = sorted(sec, key=lambda d: ORDER.index(d) if d in ORDER else 99)
     rows = ''
@@ -77,18 +81,22 @@ def _rows(sec_key, data, lang):
             items = [x for x in val if x]
             if not items:
                 continue
-            lab = ASK_LABEL[lang] if ask else STRAT_LABEL[lang]
             body = ''.join(f'<p>{n}. {fmt(x)}</p>' for n, x in enumerate(items, 1))
-            rows += f'<tr><td class="dp">{name}<span class="bd">{html.escape(lab)}</span></td><td class="sv">{body}</td></tr>'
+            if ask:                                                        # GM 은 전략 행과 HQ 요청 행이 따로 있어 구분 배지를 단다
+                body = f'<div class="ln"><span class="bd">{html.escape(ASK_LABEL[lang])}</span><span class="tx">{body}</span></div>'
+            rows += f'<tr><td class="dp">{name}</td><td class="sv">{body}</td></tr>'
             continue
+        lines = ''
         for lab in SEC_LABELS[sec_key]:
             v = val.get(lab)
             if not v or not v[0]:
                 continue
             core = v[0]
-            body = ''.join(f'<p>{fmt(x)}</p>' for x in (core if isinstance(core, list) else [core]) if x)
-            if body:
-                rows += f'<tr><td class="dp">{name}<span class="bd">{html.escape(_label(lab, lang))}</span></td><td class="sv">{body}</td></tr>'
+            ps = ''.join(f'<p>{fmt(x)}</p>' for x in (core if isinstance(core, list) else [core]) if x)
+            if ps:
+                lines += f'<div class="ln"><span class="bd">{html.escape(_label(lab, lang))}</span><span class="tx">{ps}</span></div>'
+        if lines:
+            rows += f'<tr><td class="dp">{name}</td><td class="sv">{lines}</td></tr>'
     return rows
 
 

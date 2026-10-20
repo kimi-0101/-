@@ -153,19 +153,25 @@ class T(unittest.TestCase):
     def test_render_multiline(self):
         import summary_render as SR
         h = SR._rows('sec6', {'sec6': {'영업': {'결과': [['가', '나'], None]}}}, 'ko')
-        self.assertEqual(h.count('<p>'), 2)                                      # 다른 맥락은 한 칸 안에서 줄을 나눈다
-        self.assertEqual(h.count('<tr>'), 1)                                      # 한 줄짜리 행 하나
-        self.assertIn('<td class="dp">영업<span class="bd">결과</span></td>', h)       # 왼쪽 칸: 부서명 + 항목 배지
+        self.assertEqual(h.count('<p>'), 2)                                      # 다른 맥락은 한 배지 아래에서 줄을 나눈다
+        self.assertEqual(h.count('<tr>'), 1)
+        self.assertIn('<td class="dp">영업</td>', h)                              # 왼쪽 칸은 부서명만
+        self.assertIn('<span class="bd">결과</span>', h)                          # 배지는 오른쪽 내용 칸 안
 
-    def test_render_rows_match_the_original_table_shape_and_merge_keeps_raw_table_folded(self):
+    def test_render_one_row_per_dept_with_badges_in_the_content_cell_and_merge_keeps_raw_table_folded(self):
         import summary_render as SR
         data = {'ko': {'sec5': {}, 'sec6': {'영업': {'결과': ['매출 20% 증가', None], '원인': ['연휴', None]}, 'GM': {'조치': ['집중관리', None]}},
                        'sec7': {'GM': ['11월 행사', '12월 점검'], 'GM(HQ 요청)': ['보고 간소화']}}}
         c6 = SR._rows('sec6', data['ko'], 'ko')
-        self.assertEqual(c6.count('<tr>'), 3)
-        self.assertLess(c6.index('GM<span class="bd">조치'), c6.index('영업<span class="bd">결과'))           # 부서 순서(GM 먼저)
+        self.assertEqual(c6.count('<tr>'), 2)                                     # 부서마다 한 행
+        self.assertLess(c6.index('<td class="dp">GM</td>'), c6.index('<td class="dp">영업</td>'))   # 부서 순서(GM 먼저)
+        self.assertEqual(c6.count('class="bd"'), 3)                               # 영업 2개(결과·원인) + GM 1개(조치)
+        self.assertLess(c6.index('>결과<'), c6.index('>원인<'))                       # 한 부서 안에서는 결과 → 원인 순서
+        self.assertEqual(c6.count('<td class="dp">영업</td>'), 1)                  # 부서명은 한 번만
         c7 = SR._rows('sec7', data['ko'], 'ko')
-        self.assertIn('<span class="bd">향후전략</span>', c7); self.assertIn('<p>2. 12월 점검</p>', c7); self.assertIn('<span class="bd">HQ 요청사항</span>', c7)
+        self.assertIn('<p>2. 12월 점검</p>', c7)
+        self.assertEqual(c7.count('<td class="dp">GM</td>'), 2)                    # GM 전략 행 + GM HQ 요청 행
+        self.assertEqual(c7.count('class="bd"'), 1); self.assertIn('<span class="bd">HQ 요청사항</span>', c7)
         orig = '<div class="sec"><h3>6</h3><table class="t3"><tr><td>원문</td></tr></table></div>'
         merged = SR.merge(orig, '<table class="t3 smt">' + c6 + '</table>')
         self.assertTrue(merged.index('smt') < merged.index('<details class="raw">'))        # 요약 표가 위, 원문은 접힘 아래
