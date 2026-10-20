@@ -19,15 +19,12 @@ DEPT_NAMES = {'GM': ('GM', 'GM'), 'GM(HQ 요청)': ('GM (HQ requests)', 'GM（�
               'EC': ('EC', 'EC'), 'VMD': ('VMD', 'VMD'), '마케팅': ('Marketing', '行銷'), '물류': ('Logistics', '物流'), 'HR': ('HR', '人資'), '회계/재무': ('Finance', '財務')}
 SEC_LABELS = {'sec5': ('동향', '대응'), 'sec6': ('결과', '원인', '조치')}
 
-CSS = ('<style>.smc{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:10px;margin:0 0 12px}'
-       '.smc .cd{border:1px solid #e5e7eb;background:#fff;padding:10px 14px;border-radius:2px}'
-       '.smc h4{margin:0 0 6px;font-size:14px}'
-       '.smc .it{display:flex;gap:10px;margin:10px 0}.smc .lb{flex:0 0 2.6em;font-weight:700;font-size:13px}'
-       '.smc .tx{display:flex;flex-direction:column;gap:4px}.smc .cr{font-weight:600;font-size:14px;line-height:1.55}'
-       '.smc .dt{color:#6b7280;font-size:13px;line-height:1.55}.smc ol{margin:0;padding-left:20px;font-size:14px;line-height:1.6}.smc ol li{margin:4px 0}'
-       '.smc b.k{background:#fff3b0;color:#111;padding:0 2px;border-radius:2px;font-weight:inherit}'
+CSS = ('<style>.smt{margin:0 0 10px}.smt b.k{background:#fff3b0;color:#111;padding:0 2px;border-radius:2px;font-weight:inherit}'
+       '.smt td.sv p{margin:0 0 4px}.smt td.sv p:last-child{margin-bottom:0}'
        'details.raw{margin:8px 0 0}details.raw>summary{cursor:pointer;color:#6b7280;font-size:12.5px;padding:4px 0}'
-       '@media (prefers-color-scheme:dark){.smc .cd{background:#1a1c1f;border-color:#2c2f34}.smc .dt{color:#9a9ea5}}</style>')
+       '@media (prefers-color-scheme:dark){.smt b.k{background:#4a4220;color:#fff}}</style>')
+STRAT_LABEL = {'ko': '향후전략', 'en': 'Next strategy', 'zh': '後續策略'}
+ASK_LABEL = {'ko': 'HQ 요청사항', 'en': 'HQ requests', 'zh': '總部需求'}
 BOLD = re.compile(r'(\d[\d,.]*(?:~\d+)?%|\d[\d,.]*만 TWD|\d[\d,.]*달러)')
 
 
@@ -64,34 +61,34 @@ def _label(lab, lang):
     return n[0] if lang == 'en' and n else n[1] if lang == 'zh' and n else lab
 
 
-def _cards(sec_key, data, lang):
+def _rows(sec_key, data, lang):
+    """부서·항목(왼쪽) | 내용(오른쪽) 한 줄짜리 행. 기존 5·6·7번 표(.t3)와 같은 모양이다. 같은 맥락은 한 줄, 다른 맥락은 줄을 나눠 보인다."""
     sec = (data or {}).get(sec_key) or {}
     depts = sorted(sec, key=lambda d: ORDER.index(d) if d in ORDER else 99)
-    out = ''
+    rows = ''
     for d in depts:
         val = sec[d]
         if not val:
             continue
+        ask = d == 'GM(HQ 요청)'
+        name = html.escape(_dept_label('GM' if ask else d, lang))
         if sec_key == 'sec7':
             items = [x for x in val if x]
             if not items:
                 continue
-            body = '<ol>' + ''.join(f'<li>{fmt(x)}</li>' for x in items) + '</ol>'
-        else:
-            rows = ''
-            for lab in SEC_LABELS[sec_key]:
-                v = val.get(lab)
-                if not v or not v[0]:
-                    continue
-                core, det = v[0], (v[1] if len(v) > 1 else None)
-                crs = ''.join(f'<span class="cr">{fmt(x)}</span>' for x in (core if isinstance(core, list) else [core]) if x)
-                dt = f'<span class="dt">{fmt(det)}</span>' if det else ''
-                rows += f'<div class="it"><span class="lb">{_label(lab, lang)}</span><span class="tx">{crs}{dt}</span></div>'
-            if not rows:
+            lab = ASK_LABEL[lang] if ask else STRAT_LABEL[lang]
+            body = ''.join(f'<p>{n}. {fmt(x)}</p>' for n, x in enumerate(items, 1))
+            rows += f'<tr><td class="dp">{name}<small>{html.escape(lab)}</small></td><td class="sv">{body}</td></tr>'
+            continue
+        for lab in SEC_LABELS[sec_key]:
+            v = val.get(lab)
+            if not v or not v[0]:
                 continue
-            body = rows
-        out += f'<div class="cd"><h4>{html.escape(_dept_label(d, lang))}</h4>{body}</div>'
-    return out
+            core = v[0]
+            body = ''.join(f'<p>{fmt(x)}</p>' for x in (core if isinstance(core, list) else [core]) if x)
+            if body:
+                rows += f'<tr><td class="dp">{name}<small>{html.escape(_label(lab, lang))}</small></td><td class="sv">{body}</td></tr>'
+    return rows
 
 
 def cards(ent, code):
@@ -104,17 +101,18 @@ def cards(ent, code):
         parts = ''
         for lang in ('ko', 'en', 'zh'):
             d = data.get(lang) or data['ko']
-            c = _cards('sec' + n, d, lang)
+            c = _rows('sec' + n, d, lang)
             if c:
-                parts += f'<div class="{lang}"><div class="smc">{c}</div></div>'
+                parts += f'<div class="{lang}"><table class="t3 smt">{c}</table></div>'
         if parts:
             res[n] = CSS + parts
     return res or None
 
 
 def merge(sec_html, cards_html):
-    """섹션 HTML 의 부서 원문 표(<table class="t3">)를 '원문 보기'로 접고, 그 위에 정리본 카드를 넣는다."""
+    """섹션 HTML 의 부서 원문 표(<table class="t3">)를 '원문 보기'로 접고, 그 위에 요약 표를 넣는다."""
     if not cards_html or '<table class="t3">' not in sec_html:
         return sec_html
-    s = sec_html.replace('<table class="t3">', cards_html + '<details class="raw"><summary>부서 원문 보기</summary><table class="t3">', 1)
-    return s.replace('</table>', '</table></details>', 1)
+    s = sec_html.replace('<table class="t3">', '@@SUMMARY@@<details class="raw"><summary>부서 원문 보기</summary><table class="t3">', 1)
+    s = s.replace('</table>', '</table></details>', 1)
+    return s.replace('@@SUMMARY@@', cards_html, 1)
