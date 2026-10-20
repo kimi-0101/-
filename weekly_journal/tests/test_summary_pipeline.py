@@ -155,7 +155,7 @@ class T(unittest.TestCase):
         h = SR._rows('sec6', {'sec6': {'영업': {'결과': [['가', '나'], None]}}}, 'ko')
         self.assertEqual(h.count('<p>'), 2)                                      # 다른 맥락은 한 칸 안에서 줄을 나눈다
         self.assertEqual(h.count('<tr>'), 1)                                      # 한 줄짜리 행 하나
-        self.assertIn('<td class="dp">영업<small>결과</small></td>', h)             # 기존 표(.t3)와 같은 왼쪽 칸 모양
+        self.assertIn('<td class="dp">영업<span class="bd">결과</span></td>', h)       # 왼쪽 칸: 부서명 + 항목 배지
 
     def test_render_rows_match_the_original_table_shape_and_merge_keeps_raw_table_folded(self):
         import summary_render as SR
@@ -163,9 +163,9 @@ class T(unittest.TestCase):
                        'sec7': {'GM': ['11월 행사', '12월 점검'], 'GM(HQ 요청)': ['보고 간소화']}}}
         c6 = SR._rows('sec6', data['ko'], 'ko')
         self.assertEqual(c6.count('<tr>'), 3)
-        self.assertLess(c6.index('GM<small>조치'), c6.index('영업<small>결과'))           # 부서 순서(GM 먼저)
+        self.assertLess(c6.index('GM<span class="bd">조치'), c6.index('영업<span class="bd">결과'))           # 부서 순서(GM 먼저)
         c7 = SR._rows('sec7', data['ko'], 'ko')
-        self.assertIn('<small>향후전략</small>', c7); self.assertIn('<p>2. 12월 점검</p>', c7); self.assertIn('<small>HQ 요청사항</small>', c7)
+        self.assertIn('<span class="bd">향후전략</span>', c7); self.assertIn('<p>2. 12월 점검</p>', c7); self.assertIn('<span class="bd">HQ 요청사항</span>', c7)
         orig = '<div class="sec"><h3>6</h3><table class="t3"><tr><td>원문</td></tr></table></div>'
         merged = SR.merge(orig, '<table class="t3 smt">' + c6 + '</table>')
         self.assertTrue(merged.index('smt') < merged.index('<details class="raw">'))        # 요약 표가 위, 원문은 접힘 아래

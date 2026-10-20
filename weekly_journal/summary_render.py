@@ -19,10 +19,11 @@ DEPT_NAMES = {'GM': ('GM', 'GM'), 'GM(HQ 요청)': ('GM (HQ requests)', 'GM（�
               'EC': ('EC', 'EC'), 'VMD': ('VMD', 'VMD'), '마케팅': ('Marketing', '行銷'), '물류': ('Logistics', '物流'), 'HR': ('HR', '人資'), '회계/재무': ('Finance', '財務')}
 SEC_LABELS = {'sec5': ('동향', '대응'), 'sec6': ('결과', '원인', '조치')}
 
-CSS = ('<style>.smt{margin:0 0 10px}.smt b.k{background:#fff3b0;color:#111;padding:0 2px;border-radius:2px;font-weight:inherit}'
+CSS = ('<style>.smt{margin:0 0 10px}.smt .bd{display:block;width:fit-content;margin-top:5px;padding:2px 10px;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:6px;color:#111;font-size:12.5px;font-weight:700;line-height:1.5;white-space:nowrap}'
+       '.smt b.k{background:#fff3b0;color:#111;padding:0 2px;border-radius:2px;font-weight:inherit}'
        '.smt td.sv p{margin:0 0 4px}.smt td.sv p:last-child{margin-bottom:0}'
        'details.raw{margin:8px 0 0}details.raw>summary{cursor:pointer;color:#6b7280;font-size:12.5px;padding:4px 0}'
-       '@media (prefers-color-scheme:dark){.smt b.k{background:#4a4220;color:#fff}}</style>')
+       '@media (prefers-color-scheme:dark){.smt b.k{background:#4a4220;color:#fff}.smt .bd{background:#2a2d33;border-color:#3a3e45;color:#f3f4f6}}</style>')
 STRAT_LABEL = {'ko': '향후전략', 'en': 'Next strategy', 'zh': '後續策略'}
 ASK_LABEL = {'ko': 'HQ 요청사항', 'en': 'HQ requests', 'zh': '總部需求'}
 BOLD = re.compile(r'(\d[\d,.]*(?:~\d+)?%|\d[\d,.]*만 TWD|\d[\d,.]*달러)')
@@ -78,7 +79,7 @@ def _rows(sec_key, data, lang):
                 continue
             lab = ASK_LABEL[lang] if ask else STRAT_LABEL[lang]
             body = ''.join(f'<p>{n}. {fmt(x)}</p>' for n, x in enumerate(items, 1))
-            rows += f'<tr><td class="dp">{name}<small>{html.escape(lab)}</small></td><td class="sv">{body}</td></tr>'
+            rows += f'<tr><td class="dp">{name}<span class="bd">{html.escape(lab)}</span></td><td class="sv">{body}</td></tr>'
             continue
         for lab in SEC_LABELS[sec_key]:
             v = val.get(lab)
@@ -87,7 +88,7 @@ def _rows(sec_key, data, lang):
             core = v[0]
             body = ''.join(f'<p>{fmt(x)}</p>' for x in (core if isinstance(core, list) else [core]) if x)
             if body:
-                rows += f'<tr><td class="dp">{name}<small>{html.escape(_label(lab, lang))}</small></td><td class="sv">{body}</td></tr>'
+                rows += f'<tr><td class="dp">{name}<span class="bd">{html.escape(_label(lab, lang))}</span></td><td class="sv">{body}</td></tr>'
     return rows
 
 
