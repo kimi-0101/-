@@ -178,7 +178,7 @@ def _translate_many(jobs, say):
         tr = None
         for attempt in (1, 2):                          # 구조가 어긋나 None 이 오는 경우가 있어 한 번 더 시도
             try:
-                tr = S.translate_struct(struct, name)
+                tr = S.translate_parallel(struct, name)
             except Exception as ex:
                 say(f'[경고] {name} 번역 실패({attempt}/2) — {ex!r}')
                 tr = None
@@ -480,6 +480,12 @@ def main(argv=None):
                 rc = 1
                 print(f'[경고] {ent} {a.code} 보정 실패 — {ex!r}')
         print('[사용량] ' + S.usage_report())
+        try:                                                           # 보정이 끝나면 점검까지 이어서 한다(따로 실행할 필요 없음)
+            import check_summary as C
+            print('--- 점검 ---')
+            rc = C.main(['--code', a.code] + (['--ent', a.ent] if a.ent else [])) or rc
+        except Exception as ex:
+            print(f'[경고] 점검을 실행하지 못했습니다: {ex!r}')
         return rc
     if not (a.ent and a.code):
         ap.error('--ent 와 --code (또는 --auto-week) 가 필요합니다')

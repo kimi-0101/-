@@ -156,6 +156,11 @@ class T(unittest.TestCase):
         self.assertEqual(h.count('class="cr"'), 2)
 
 
+def R(struct, **kw):
+    """번역 응답(번호 → 문장)을 번역된 구조에서 만든다 (번역기는 키·구조 없이 번호만 주고받는다)"""
+    return json.dumps({str(i + 1): s for i, s in enumerate(S._texts(struct))}, ensure_ascii=False)
+
+
 def _map_str(x, f):
     if isinstance(x, dict):
         return {k: _map_str(v, f) for k, v in x.items()}
@@ -260,6 +265,22 @@ class Repair(unittest.TestCase):
         self._claude({})
         out, left, n = S.repair_flagged(self.out, [{'위치': 'sec6/없는부서/결과', '문장': 'x', '문제': 'y'}], self.cells)
         self.assertEqual((n, len(left), len(self.calls)), (0, 1, 0))
+
+    def test_repair_command_runs_the_check_afterwards(self):
+        import io, contextlib
+        self._claude({})
+        S.verify_claims = lambda *a, **k: []
+        S.translate_struct = lambda struct, name: _map_str(struct, lambda s: f'{name[:2]}|{s}')
+        ko, dropped = B.make_display(self.out, [], [], self.cells, '')
+        draft = {'ent': 'HK', 'code': 'M09', 'cells': self.cells, 'quant': '', 'out': self.out, 'flags': [], 'warn': [], 'dropped': [],
+                 'display': {'ko': ko}}                                          # 번역이 아직 없는 상태
+        json.dump(draft, open(os.path.join(self.tmp, 'HK_M09.json'), 'w', encoding='utf-8'), ensure_ascii=False)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = B.main(['--repair', '--code', 'M09', '--ent', 'HK'])
+        text = buf.getvalue()
+        self.assertEqual(rc, 0)
+        self.assertIn('--- 점검 ---', text); self.assertIn('[통과] HK M09', text); self.assertIn('점검 결과: 모두 통과', text)
 
     def test_repair_existing_updates_draft_translations_only_for_changed_lines(self):
         self._claude({'1': '시티게이트 +2%, 황금연휴 전 관광객 감소', '2': '11월 재고 정리'})
@@ -474,12 +495,14 @@ class GeminiCall(unittest.TestCase):
 
 class Tr(unittest.TestCase):
     KO = {'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['2단계 20% 확대']}}
-    OK = json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['Stage 2, 20% expansion']}})
-    BAD = json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['Stage 3, 20% expansion']}})
+    OK = R({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['Stage 2, 20% expansion']}})
+    BAD = R({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['Stage 3, 20% expansion']}})
 
     def setUp(self):
         S.translate_struct = REAL_TRANSLATE
         S.GEMINI_RETRY_WAIT = 0
+        os.environ['WJ_TRANSLATOR'] = 'auto'                       # 이 클래스는 Gemini 경로(auto)를 시험한다. 기본값(claude)은 아래 별도 시험
+        self.addCleanup(os.environ.pop, 'WJ_TRANSLATOR', None)
         self.claude_calls = 0
         def claude(p, model=None, **kw):
             self.claude_calls += 1
@@ -531,9 +554,9 @@ class Tr(unittest.TestCase):
 
     def test_month_digit_may_drop_in_english_but_new_numbers_may_not(self):
         ko = {'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['9월 목표 20% 달성']}}
-        S.call_gemini = lambda p, timeout=120: json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['September target 20% achieved']}})
+        S.call_gemini = lambda p, timeout=120: R({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['September target 20% achieved']}})
         self.assertTrue(S.translate_struct(ko, '영어'))
-        S.call_gemini = lambda p, timeout=120: json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['September target 25% achieved']}})
+        S.call_gemini = lambda p, timeout=120: R({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['September target 25% achieved']}})
         self.assertIsNone(S.translate_struct(ko, '영어'))
 
     def test_translator_claude_skips_gemini(self):
@@ -559,22 +582,22 @@ class Tr(unittest.TestCase):
 
     def test_spelled_out_small_numbers_and_festival_dates_tolerated(self):
         ko = {'sec5': {}, 'sec6': {}, 'sec7': {'EC': ['11.11 행사 6주 진행, 20% 할인']}}
-        S.call_gemini = lambda p, timeout=120: json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'EC': ["Singles' Day event for six weeks, 20% discount"]}})
+        S.call_gemini = lambda p, timeout=120: R({'sec5': {}, 'sec6': {}, 'sec7': {'EC': ["Singles' Day event for six weeks, 20% discount"]}})
         self.assertTrue(S.translate_struct(ko, '영어'))
-        S.call_gemini = lambda p, timeout=120: json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'EC': ["Singles' Day event for six weeks, discount"]}})   # 20% 가 빠지면 불통과
+        S.call_gemini = lambda p, timeout=120: R({'sec5': {}, 'sec6': {}, 'sec7': {'EC': ["Singles' Day event for six weeks, discount"]}})   # 20% 가 빠지면 불통과
         self.assertIsNone(S.translate_struct(ko, '영어'))
-        S.call_gemini = lambda p, timeout=120: json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'EC': ["Singles' Day event for 7 weeks, 20% discount"]}})   # 새 숫자 7 은 불통과
+        S.call_gemini = lambda p, timeout=120: R({'sec5': {}, 'sec6': {}, 'sec7': {'EC': ["Singles' Day event for 7 weeks, 20% discount"]}})   # 새 숫자 7 은 불통과
         self.assertIsNone(S.translate_struct(ko, '영어'))
 
     def test_half_year_and_quarter_tokens_are_not_counted_as_numbers(self):
         ko = {'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['2026년 하반기 바자회 모색, 3분기 점검']}}
-        S.call_gemini = lambda p, timeout=120: json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['Explore 2026 H2 bazaar, Q3 review']}})
+        S.call_gemini = lambda p, timeout=120: R({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['Explore 2026 H2 bazaar, Q3 review']}})
         self.assertTrue(S.translate_struct(ko, '영어'))
 
     def test_discount_percent_may_become_zhe_when_arithmetic_is_right(self):
         ko = {'sec5': {}, 'sec6': {}, 'sec7': {'EC': ['20% 할인 행사 진행']}}
         def tr(text):
-            return json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'EC': [text]}}, ensure_ascii=False)
+            return R({'sec5': {}, 'sec6': {}, 'sec7': {'EC': [text]}}, ensure_ascii=False)
         os.environ['WJ_CLAUDE_FALLBACK'] = '0'
         try:
             S.call_gemini = lambda p, timeout=120: tr('舉辦8折優惠活動')
@@ -601,9 +624,80 @@ class Tr(unittest.TestCase):
         self.assertTrue(S.translate_struct(self.KO, '영어'))
         self.assertEqual(len(seen), 2); self.assertIn('이전 번역의 문제', seen[1])
 
+    def test_default_translator_is_claude_and_never_touches_gemini(self):
+        os.environ.pop('WJ_TRANSLATOR', None)
+        def g(p, timeout=120):
+            raise AssertionError('gemini 를 부르면 안 됨')
+        S.call_gemini = g
+        self.assertTrue(S.translate_struct(self.KO, '영어'))
+        self.assertEqual(self.claude_calls, 1)
+
+    def test_translation_is_split_into_chunks_run_in_parallel_and_merged_in_order(self):
+        import time
+        os.environ.pop('WJ_TRANSLATOR', None)
+        ko = {'sec5': {}, 'sec6': {f'부서{i}': {'결과': [f'매출 {i}0% 증가', None]} for i in range(1, 7)}, 'sec7': {}}
+        def claude(p, model=None, **kw):
+            time.sleep(0.3)
+            struct = json.loads(p.split('\n\n')[1] if '[이전' not in p else p.split('\n\n')[1])
+            return json.dumps(_map_str(struct, lambda s_: 'EN ' + s_), ensure_ascii=False)
+        S.call_claude = claude
+        os.environ['WJ_TRANS_CHUNK'] = '2'
+        try:
+            t0 = time.time()
+            out = S.translate_parallel(ko, '영어')
+            dt = time.time() - t0
+        finally:
+            os.environ.pop('WJ_TRANS_CHUNK', None)
+        self.assertLess(dt, 0.7)                                                 # 3조각을 차례로 하면 0.9초 이상
+        self.assertEqual(list(out['sec6']), [f'부서{i}' for i in range(1, 7)])        # 순서 유지
+        self.assertEqual(out['sec6']['부서3']['결과'][0], 'EN 매출 30% 증가')
+
+    def test_if_any_chunk_fails_the_language_is_left_empty(self):
+        os.environ.pop('WJ_TRANSLATOR', None)
+        ko = {'sec5': {}, 'sec6': {f'부서{i}': {'결과': [f'매출 {i}0% 증가', None]} for i in range(1, 5)}, 'sec7': {}}
+        def claude(p, model=None, **kw):
+            struct = json.loads(p.split('\n\n')[1] if '[이전' not in p else p.split('\n\n')[1])
+            if any('30%' in v for v in struct.values()):
+                return json.dumps(_map_str(struct, lambda s_: '숫자 틀림 999'), ensure_ascii=False)
+            return json.dumps(_map_str(struct, lambda s_: 'EN ' + s_), ensure_ascii=False)
+        S.call_claude = claude
+        os.environ['WJ_TRANS_CHUNK'] = '2'
+        try:
+            self.assertIsNone(S.translate_parallel(ko, '영어'))
+        finally:
+            os.environ.pop('WJ_TRANS_CHUNK', None)
+
+    def test_digit_first_half_year_tokens_and_trailing_text_in_response(self):
+        ko = {'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['2026년 하반기 바자회 모색']}}
+        os.environ['WJ_TRANSLATOR'] = 'auto'
+        S.call_gemini = lambda p, timeout=120: R({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['Explore 2H 2026 bazaar']}}) + '\n\n참고: {이 설명은 무시}'
+        self.assertTrue(S.translate_struct(ko, '영어'))
+
+    def test_parse_json_reads_only_the_first_object(self):
+        self.assertEqual(S.parse_json('설명 ```json\n{"a": {"b": 1}}\n``` 그리고 {"c": 2}'), {'a': {'b': 1}})
+        with self.assertRaises(ValueError):
+            S.parse_json('JSON 없음')
+
+    def test_keys_are_never_sent_and_missing_ids_are_retried_with_reason(self):
+        os.environ.pop('WJ_TRANSLATOR', None)
+        ko = {'sec5': {'영업': {'동향': ['시장 부진', None], '대응': ['재고 정리 20%', None]}}, 'sec6': {}, 'sec7': {'GM': ['11월 행사', '12월 점검']}}
+        seen = []
+        def claude(p, model=None, **kw):
+            seen.append(p)
+            if len(seen) == 1:
+                return json.dumps({'1': 'Weak market', '2': 'Clearance 20%', '3': 'Nov event'})       # 4번이 빠짐
+            return json.dumps({'1': 'Weak market', '2': 'Clearance 20%', '3': 'Nov event', '4': 'Dec check'})
+        S.call_claude = claude
+        out = S.translate_struct(ko, '영어')
+        self.assertEqual(out['sec5']['영업']['대응'], ['Clearance 20%', None])                      # 키·null 은 원래 구조 그대로
+        self.assertEqual(out['sec7']['GM'], ['Nov event', 'Dec check'])
+        for key in ('동향', '대응', 'sec5', 'sec7', '영업'):
+            self.assertNotIn(key, seen[0].split('\n\n')[1])                                       # 키는 번역기에 보내지 않는다
+        self.assertEqual(len(seen), 2); self.assertIn('번호', seen[1].split('[이전 번역의 문제]')[1])
+
     def test_man_unit_and_two_digit_tolerated(self):
         ko = {'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['3,693만 달성, 두 자릿수 성장']}}
-        S.call_gemini = lambda p, timeout=120: json.dumps({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['36.93m achieved, double-digit growth']}})
+        S.call_gemini = lambda p, timeout=120: R({'sec5': {}, 'sec6': {}, 'sec7': {'GM': ['36.93m achieved, double-digit growth']}})
         self.assertTrue(S.translate_struct(ko, '영어'))
 
     def test_per_call_log_line_and_model_env(self):

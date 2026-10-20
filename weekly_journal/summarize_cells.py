@@ -71,7 +71,7 @@ def build_prompt(ent, period, cells, quant_text):
 import threading
 _ULOCK = threading.Lock()
 _CTX = threading.local()
-_CLAUDE_SEM = threading.Semaphore(int(os.environ.get('WJ_MAX_CLAUDE', '4')))      # claude 를 동시에 몇 개까지 띄울지(여러 건·여러 묶음을 한꺼번에 돌려도 이 수를 넘지 않는다)
+_CLAUDE_SEM = threading.Semaphore(int(os.environ.get('WJ_MAX_CLAUDE', '6')))      # claude 를 동시에 몇 개까지 띄울지(여러 건·여러 묶음을 한꺼번에 돌려도 이 수를 넘지 않는다)
 
 
 def set_ctx(text):
@@ -227,10 +227,12 @@ def call_gemini(prompt, timeout=120):
 
 
 def parse_json(txt):
-    m = re.search(r'\{.*\}', txt, re.S)
-    if not m:
-        raise ValueError('JSON 을 찾지 못함: ' + txt[:200])
-    return json.loads(m.group(0))
+    """응답에서 첫 JSON 객체 하나만 읽는다. 뒤에 설명이나 다른 JSON 이 붙어 있어도 첫 객체까지만 본다."""
+    i = (txt or '').find('{')
+    if i < 0:
+        raise ValueError('JSON 을 찾지 못함: ' + (txt or '')[:200])
+    obj, _end = json.JSONDecoder().raw_decode(txt[i:])
+    return obj
 
 
 def allowed_numbers(cells, quant_text):
@@ -428,9 +430,10 @@ def summarize(ent, period, cells, quant_text='', model=None):
     return out, check_numbers(out, cells, quant_text)
 
 
-TRANS_PROMPT = """아래는 한국어 영업일지 정리본(JSON)이다. 문자열 값만 {lang} 로 번역해 같은 구조의 JSON 한 개만 출력한다.
-- 키, 구조, 배열 길이, 숫자, 퍼센트, 고유명사(매장명·브랜드·약어 NGA·MG·UPT·ATV·SS·FW·B2B·EC 등)는 그대로 둔다.
-- 의미를 바꾸거나 덧붙이거나 줄이지 않는다. null 은 null 로 둔다.
+TRANS_PROMPT = """아래는 한국어 영업일지의 번역할 문장 목록이다(JSON 객체, 번호 → 문장). 같은 번호를 키로 하여 {lang} 로 번역한 JSON 객체 한 개만 출력한다.
+- 번호를 바꾸거나 빼거나 합치거나 나누지 않는다. 문장 수는 그대로다.
+- 숫자, 퍼센트, 고유명사(매장명·브랜드·약어 NGA·MG·UPT·ATV·SS·FW·B2B·EC 등)는 그대로 둔다.
+- 의미를 바꾸거나 덧붙이거나 줄이지 않는다.
 - 업무 보고서 문체로 간결하게."""
 
 
@@ -440,6 +443,30 @@ def _texts(x):
     if isinstance(x, list):
         return [t for v in x for t in _texts(v)]
     return [x] if isinstance(x, str) else []
+
+
+def shape_diff(a, b, path=''):
+    """두 구조가 어디서 다른지 첫 곳을 알려 준다(재시도할 때 AI 에게 그대로 전달한다)."""
+    if isinstance(a, dict) and isinstance(b, dict):
+        if list(a) != list(b):
+            miss, extra = [k for k in a if k not in b], [k for k in b if k not in a]
+            return f'{path or "/"} 키: 빠진 {miss} 늘어난 {extra}' if (miss or extra) else f'{path or "/"} 키 순서'
+        for k in a:
+            d = shape_diff(a[k], b[k], f'{path}/{k}')
+            if d:
+                return d
+        return ''
+    if isinstance(a, list) and isinstance(b, list):
+        if len(a) != len(b):
+            return f'{path} 배열 길이 {len(a)} → {len(b)} (항목을 합치거나 나누지 말고 같은 개수로)'
+        for i, (x, y) in enumerate(zip(a, b)):
+            d = shape_diff(x, y, f'{path}[{i}]')
+            if d:
+                return d
+        return ''
+    if type(a) != type(b) and not (a is None and b is None):
+        return f'{path} 형태가 다름({type(a).__name__} → {type(b).__name__})'
+    return ''
 
 
 def translation_checker(ko_struct):
@@ -476,10 +503,10 @@ def translation_checker(ko_struct):
     def problem(out):
         """번역이 원본과 어긋난 점. 없으면 ''. 숫자는 새로 생기면 안 되고, 월(月) 숫자만 빠져도 된다. 할인율은 '折' 표기로 바꿔도 산수가 맞으면 허용."""
         if shape(out) != shape(ko_struct):
-            return '구조(키·배열 길이)가 다름'
+            return '구조(키·배열 길이)가 다름 — ' + shape_diff(ko_struct, out)
         out_text = ' '.join(_texts(out))
         out_text = re.sub(r'([一二三四五六七八九〇]+)折', lambda g: ''.join(str('〇一二三四五六七八九'.index(c)) for c in g.group(1)) + '折', out_text)   # 八折 → 8折
-        got = nums(re.sub(r'\b[HQ][1-4]\b', ' ', out_text))        # 'H2'(하반기)·'Q3'(3분기) 는 한글의 반기·분기를 옮긴 표기라 숫자로 세지 않는다
+        got = nums(re.sub(r'\b(?:[HQ][1-4]|[1-4][HQ])\b', ' ', out_text))        # 'H2'·'2H'(하반기)·'Q3'(3분기) 는 한글의 반기·분기를 옮긴 표기라 숫자로 세지 않는다
         okmissing, okextra = set(), set()
         for m in disc:
             f = (100 - int(m)) / 10
@@ -496,11 +523,26 @@ def translation_checker(ko_struct):
 
 
 def translate_struct(ko_struct, lang_name, model=None):
-    """한글 정리본(sec5/sec6/sec7 구조)을 다른 언어로 번역. 구조와 숫자가 원본과 같을 때만 반환, 아니면 None.
-    번역은 Gemini 우선. 걸리면 이유를 알려 Gemini 로 한 번 더(Claude 로 넘기지 않음), Gemini 키가 없을 때만 Claude."""
-    prompt = base_prompt = TRANS_PROMPT.format(lang=lang_name) + '\n\n' + json.dumps(ko_struct, ensure_ascii=False)
-    problem = translation_checker(ko_struct)
-    use_claude = os.environ.get('WJ_TRANSLATOR', 'auto').lower() == 'claude'
+    """한글 정리본(sec5/sec6/sec7 구조)을 다른 언어로 번역. 문장에 번호만 붙여 번역하고 원래 구조에 다시 끼운다. 숫자가 원본과 같을 때만 반환, 아니면 None.
+    기본은 Claude(WJ_TRANSLATOR=claude). 걸리면 이유를 알려 한 번 더. gemini/auto 는 선택 사항."""
+    strings = _texts(ko_struct)
+    if not strings:
+        return copy.deepcopy(ko_struct)
+    ids = {str(i + 1): t for i, t in enumerate(strings)}                  # 키·구조는 보내지 않는다(번역기가 키를 번역해 버리는 일을 없앤다)
+    prompt = base_prompt = TRANS_PROMPT.format(lang=lang_name) + '\n\n' + json.dumps(ids, ensure_ascii=False)
+    check = translation_checker(ko_struct)
+
+    def problem(reply):
+        """번호→문장 응답을 검사해 구조에 끼운다. 문제가 있으면 (None, 이유), 없으면 (번역된 구조, '')"""
+        if not isinstance(reply, dict):
+            return None, '번역 결과가 JSON 객체가 아님'
+        miss = [k for k in ids if not isinstance(reply.get(k), str) or not reply[k].strip()]
+        if miss:
+            return None, f'번호 {miss[:8]} 번역이 없음 (번호마다 하나씩, 합치거나 빼지 말 것)'
+        built = _rebuild(ko_struct, iter(reply[k] for k in ids))
+        why = check(built)
+        return (None, why) if why else (built, '')
+    use_claude = os.environ.get('WJ_TRANSLATOR', 'claude').lower() == 'claude'
     ask = (lambda p: call_claude(p, model=model, label=f'번역({lang_name[:2]})')) if use_claude else call_gemini
     who = 'Claude' if use_claude else 'Gemini'
     key_missing = False
@@ -519,9 +561,9 @@ def translate_struct(ko_struct, lang_name, model=None):
         except Exception as ex:                                           # 응답이 JSON 이 아닌 경우 등
             print(f'[알림] {who} 응답 해석 실패({attempt}/2): {ex!r}'[:200])
             continue
-        why = problem(out)
+        built, why = problem(out)
         if not why:
-            return out
+            return built
         print(f'[알림] {who} 번역이 검사에 걸림({attempt}/2) — {why}')
         prompt = base_prompt + f'\n\n[이전 번역의 문제] {why}. 숫자와 구조를 원문과 똑같이 맞춰 다시 번역한다.'
     fallback = os.environ.get('WJ_CLAUDE_FALLBACK', '1') != '0'
@@ -533,12 +575,54 @@ def translate_struct(ko_struct, lang_name, model=None):
     prompt = base_prompt
     for attempt in (1, 2):                                                # Gemini 키가 없거나 끝내 못 한 경우에만 Claude 로 번역(걸리면 이유를 알려 한 번 더)
         out = parse_json(call_claude(prompt, model=model, label=f'번역({lang_name[:2]})'))
-        why = problem(out)
+        built, why = problem(out)
         if not why:
-            return out
+            return built
         print(f'[알림] Claude 번역이 검사에 걸림({attempt}/2) — {why}')
         prompt = base_prompt + f'\n\n[이전 번역의 문제] {why}. 숫자와 구조를 원문과 똑같이 맞춰 다시 번역한다.'
     return None
+
+
+def _rebuild(x, it):
+    """구조 x 의 문자열 자리를 it 의 값으로 차례로 바꾼 새 구조(키·배열·null 은 그대로)."""
+    if isinstance(x, dict):
+        return {k: _rebuild(v, it) for k, v in x.items()}
+    if isinstance(x, list):
+        return [_rebuild(v, it) for v in x]
+    return next(it) if isinstance(x, str) else x
+
+
+def split_struct(ko, per=None):
+    """화면용 구조를 (섹션, 부서) 항목 per 개씩의 조각으로 나눈다. 번역을 조각마다 동시에 돌려 시간을 줄인다."""
+    per = per or int(os.environ.get('WJ_TRANS_CHUNK', '9'))
+    entries = [(sec, k) for sec in ('sec5', 'sec6', 'sec7') for k in ((ko or {}).get(sec) or {})]
+    if len(entries) <= per:
+        return [ko]
+    parts = []
+    for i in range(0, len(entries), per):
+        part = {'sec5': {}, 'sec6': {}, 'sec7': {}}
+        for sec, k in entries[i:i + per]:
+            part[sec][k] = ko[sec][k]
+        parts.append(part)
+    return parts
+
+
+def translate_parallel(ko, lang_name, model=None):
+    """translate_struct 를 조각별로 동시에 돌려 합친다. 한 조각이라도 못 채우면 None(그 언어는 비워 두고 다음에 다시), 호출 오류(한도 등)는 그대로 올린다."""
+    parts = split_struct(ko)
+    kw = {'model': model} if model else {}
+    if len(parts) == 1:
+        return translate_struct(ko, lang_name, **kw)
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=len(parts)) as ex:
+        res = list(ex.map(lambda p_: translate_struct(p_, lang_name, **kw), parts))      # 예외는 여기서 올라간다
+    if any(r is None for r in res):
+        return None
+    out = {'sec5': {}, 'sec6': {}, 'sec7': {}}
+    for r in res:
+        for sec in out:
+            out[sec].update((r or {}).get(sec) or {})
+    return out
 
 
 def demo_tw():

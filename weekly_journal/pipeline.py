@@ -140,7 +140,7 @@ def main(argv=None):
     ap.add_argument('--summary', choices=['auto', 'yes', 'no'], default='auto', help='SUMMARY 5·6·7 정리본 새로 만들기 (auto: --dry-run 이 아닐 때만, no: 만들지 않음)')
     ap.add_argument('--summary-codes', nargs='*', help='정리할 코드 (예: M09 W41). 없으면 그 주·이번 달·지난 달 자동')
     ap.add_argument('--summary-force', action='store_true', help='원문이 같아도 정리본을 다시 만든다')
-    ap.add_argument('--translator', choices=['auto', 'claude', 'gemini'], default='auto', help='번역기: auto(Gemini 키가 있으면 Gemini, 없으면 Claude) / claude(전부 Claude, 사용량 측정용) / gemini')
+    ap.add_argument('--translator', choices=['claude', 'gemini', 'auto'], default='claude', help='번역기: claude(기본, 부서 묶음을 동시에) / gemini(무료 키, 한도에 자주 걸림) / auto(Gemini 키가 있으면 Gemini, 없으면 Claude)')
     ap.add_argument('--workers', type=int, default=3, help='요약을 동시에 돌릴 건수(법인×코드). 1 이면 차례로 (기본 3)')
     ap.add_argument('--summarizer', choices=['claude', 'gemini'], default='claude', help='정리 엔진: claude(기본) / gemini(무료, Claude 사용량 0 — 품질은 compare_engines.py 로 먼저 비교)')
     ap.add_argument('--verifier', choices=['claude', 'gemini', 'none'], default='claude', help='사실 검증 엔진: claude(기본) / gemini / none(검증 안 함)')
