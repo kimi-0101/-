@@ -64,12 +64,15 @@ if (-not (Test-Path $urlFile)) { throw '서버 주소가 없습니다. -ApiUrl �
 
 # 5) 바탕화면(과 선택 시 시작 프로그램) 아이콘
 function New-WJLink($path) {
+    # 바로가기 파일명이 한글이면 WScript.Shell 의 Save() 가 로케일에 따라 실패한다(영어 윈도우 등: FileNotFoundException).
+    # 그래서 ASCII 임시 이름으로 저장한 뒤 .NET(Move-Item)으로 한글 이름으로 바꾼다. 바꾸지 못하면 임시(영어) 이름을 그대로 쓴다.
     $parent = Split-Path $path -Parent
     if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }   # 바탕화면/시작 프로그램 폴더가 없는 PC 에서도 되도록
-    $sh = New-Object -ComObject WScript.Shell
-    $s = $sh.CreateShortcut($path)
     $target = Join-Path $Venv 'Scripts\pythonw.exe'
     if (-not (Test-Path $target)) { throw "venv 의 pythonw.exe 가 없습니다: $target" }
+    $tmp = Join-Path $parent 'Weekly Journal.lnk'
+    $sh = New-Object -ComObject WScript.Shell
+    $s = $sh.CreateShortcut($tmp)
     $s.TargetPath = $target
     $s.Arguments = '"' + (Join-Path $Dir 'wj_app.py') + '"'
     $s.WorkingDirectory = $Dir
@@ -77,9 +80,12 @@ function New-WJLink($path) {
     $ico = Join-Path $Dir 'wj_app.ico'
     if (Test-Path $ico) { $s.IconLocation = $ico + ',0' }
     $s.Save()
+    if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+    try { Move-Item -LiteralPath $tmp -Destination $path -Force; return $path }
+    catch { Write-Host "[알림] 한글 이름으로 바꾸지 못해 영어 이름으로 둡니다: $tmp"; return $tmp }
 }
-New-WJLink $DeskLnk
-Write-Host "바탕화면 아이콘: $DeskLnk"
-if ($Startup) { New-WJLink $StartLnk; Write-Host "로그인 시 자동 실행: $StartLnk" }
+$made = New-WJLink $DeskLnk
+Write-Host "바탕화면 아이콘: $made"
+if ($Startup) { $made2 = New-WJLink $StartLnk; Write-Host "로그인 시 자동 실행: $made2" }
 Write-Host ''
 Write-Host '설치 완료. 바탕화면의 아이콘을 더블클릭하세요. (처음 한 번은 로그인이 필요하고, 로그인 화면의 "이 PC 에서 자동 로그인"을 켜면 다음부터 입력 없이 열립니다)'
