@@ -1,4 +1,46 @@
-# PC 서버 1단계 — 일일 백업
+# PC 서버 — 구글 클라우드 없이 PC 한 대로 돌리기
+
+- **2단계(서버): `wj_server.py`** — 구글 Apps Script·시트(Code.gs)를 대신하는 자체 서버. 같은 요청·응답 형식이라 **앱·반영 프로그램은 `api_url.txt` 주소만 바꾸면 된다.** 저장소는 SQLite 파일 하나(`wj_data/wj.sqlite3`).
+- 1단계(백업): `backup_journal.py` — 시트 → PC 날짜별 백업 (아래). 서버로 옮긴 뒤에는 `wj_admin.py backup` 이 대신한다.
+
+## 처음 켜기 (윈도우, 파이썬만 있으면 됨 — 추가 설치 없음)
+
+```
+python pc_server\wj_admin.py init                              # 기본 계정 hk / tw / hq
+python pc_server\wj_admin.py set-password tw                   # 계정마다 8자 이상 비밀번호 (hk, hq 도)
+python pc_server\wj_admin.py add-user kim --label "김 부장" --ent TW --dept MD --role writer   # 필요하면 계정 추가
+python pc_server\wj_admin.py push-key                          # ERP 숫자 반영 키 → apps_script\weekly_journal\push_key.txt 에 붙여넣기
+python pc_server\wj_admin.py import-backup wj_backup           # (선택) 1단계 백업 폴더의 글·사진을 서버로 가져오기
+python pc_server\wj_server.py                                  # 서버 켜기: http://127.0.0.1:8787/
+```
+- 같은 사무실의 다른 PC 에서도 쓰려면 `--host 0.0.0.0` 으로 켜고, 윈도우 방화벽에서 해당 포트(기본 8787)를 허용한다. **해외(홍콩·대만) 사용자는 인터넷에 직접 열지 말고 VPN 이나 보안 터널(예: Tailscale, Cloudflare Tunnel)로 연결**한다 — 이 서버는 HTTPS 를 직접 처리하지 않는다.
+- 자동 시작·자동 백업: `powershell -ExecutionPolicy Bypass -File pc_server\register_server_task.ps1 [-BindHost 0.0.0.0]` (로그인 시 서버 시작, 매일 03:00 DB 백업 30일 보관)
+- 앱 연결: `desktop_app` 의 `api_url.txt`(또는 `--api-url`)를 `http://<서버 PC 주소>:8787/api` 로 바꾼다. 앱 코드는 수정하지 않는다.
+
+## 관리 도구 `wj_admin.py`
+| 명령 | 하는 일 |
+|---|---|
+| `init` / `add-user` / `list-users` | 계정(명단) 관리. 역할 `writer`(작성자) · `hq`(본사) · `viewer`(조회), 법인 `HK`/`TW`/`ALL`, 부서 코드 |
+| `set-password <id>` | 비밀번호 변경. 그 계정의 기존 로그인은 모두 끊긴다 |
+| `push-key` | ERP 숫자 반영 키를 새로 만든다(이전 키 무효) |
+| `import-backup <폴더>` | 1단계 백업(`YYYY-MM-DD/{HK\|TW}_{코드}.json.gz`)을 DB 로. 버전이 더 높은 쪽이 남고, 여러 번 해도 같은 결과 |
+| `backup [--keep N]` | DB 를 `wj_data/backup/YYYY-MM-DD.sqlite3` 로 복사(서버가 켜져 있어도 안전). **복원 = 서버를 끄고 그 파일을 `wj.sqlite3` 로 덮어쓰기** |
+
+## Code.gs 와 다른 점
+- **자동 번역 없음**: 구글 번역(LanguageApp)이 없어서 저장해도 다른 언어 칸이 자동으로 채워지지 않는다(`translated` 는 항상 빈 목록). 각 언어 칸은 직접 쓴다. 필요하면 나중에 번역 엔진을 `Store.translate` 에 연결한다.
+- **비밀번호는 새로 정한다**: 시트의 해시는 옮길 수 없다. 대신 PBKDF2(사용자별 소금)로 저장한다.
+- 화면(HTML)은 시트·드라이브 대신 DB 에 한 줄로 저장한다(조각 나누기 불필요).
+- 로그인 5회 실패 시 15분 잠금, 로그인 유지 1일, 칸 버전 충돌 검사, 마감, "편집 중" 표시, 입구(site)별 계정 제한은 Code.gs 와 같다.
+
+## 시험
+```
+python -I pc_server\tests\test_server.py      # 서버·관리 도구 22개 항목 (실제 HTTP)
+python -I pc_server\tests\test_backup.py
+```
+
+---
+
+## 1단계 — 일일 백업 (시트 → PC)
 
 시트(JOURNAL)에만 있는 부서 글·사진을 PC 에 날짜별로 저장합니다. **시트에는 아무것도 쓰지 않습니다(읽기 전용).**
 

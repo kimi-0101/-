@@ -10,3 +10,5 @@ api_url.txt
 push_key.txt
 gemini_key.txt
 wj_backup/
+wj_data/
+wj_server_log.txt
