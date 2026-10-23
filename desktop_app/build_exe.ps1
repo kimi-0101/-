@@ -1,4 +1,4 @@
-# 윈도우에서 설치 없이 실행되는 파일(WJApp.exe) 만들기
+﻿# 윈도우에서 설치 없이 실행되는 파일(WJApp.exe) 만들기
 #   사용:  PowerShell 에서 이 폴더로 이동한 뒤  .\build_exe.ps1
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
