@@ -374,11 +374,19 @@ class TestConsoleEncoding(AppCase):
         import io
         real = sys.stdout
         sys.stdout = io.TextIOWrapper(io.BytesIO(), encoding='cp1252', errors='strict')
+        shown = []
+        orig_box = None
+        if sys.platform == 'win32':                                      # notify() 는 콘솔이 없으면 윈도우 메시지 창을 띄우고 닫힐 때까지 기다린다 → CI 에서 영원히 멈춘다
+            import ctypes
+            orig_box = ctypes.windll.user32.MessageBoxW
+            ctypes.windll.user32.MessageBoxW = lambda *a: shown.append(a) or 1
         try:
             wj_app.log(self.st, '[서버] page 한글 0.1초')
             wj_app.notify('한글 메시지')
         finally:
             sys.stdout = real
+            if orig_box is not None:
+                ctypes.windll.user32.MessageBoxW = orig_box
 
 
 class TestConcurrentWrites(unittest.TestCase):
