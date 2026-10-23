@@ -222,7 +222,7 @@ class State:
         return self.root / 'cache' / (name.replace('@', '_at_') + '.json')
 
     def cache_get(self, name):
-        for _ in range(4):
+        for _ in range(25):
             try:
                 return json.loads(self._cpath(name).read_text(encoding='utf-8'))
             except PermissionError:                                   # 윈도우: 다른 스레드가 저장본을 교체하는 순간에는 잠깐 열 수 없다 → 없는 것으로 보지 말고 다시 시도
@@ -249,12 +249,12 @@ class State:
     def data_get(self, key):
         """저장본. 다른 사람이 저장한 것이거나 너무 오래됐으면 None (같은 PC 를 여러 명이 쓸 때 남의 권한으로 받은 글이 보이지 않게)."""
         e = None
-        for _ in range(3):
+        for _ in range(25):
             try:
                 e = json.loads(self._dpath(key).read_text(encoding='utf-8'))
                 break
             except PermissionError:                                   # 윈도우: 다른 스레드가 교체하는 순간
-                time.sleep(0.03)
+                time.sleep(0.02)
             except Exception:
                 return None
         if e is None:
