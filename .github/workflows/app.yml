@@ -44,10 +44,10 @@ jobs:
         shell: powershell
         run: |
           $p = Start-Process -FilePath ".\desktop_app\dist\WJApp.exe" -ArgumentList "--version" -PassThru -Wait -NoNewWindow
-          Write-Host "종료코드: $($p.ExitCode)"
-          if ($p.ExitCode -ne 0) { throw "WJApp.exe 종료코드 $($p.ExitCode)" }
+          Write-Host "exit code: $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { throw "WJApp.exe exit code $($p.ExitCode)" }
           $size = (Get-Item ".\desktop_app\dist\WJApp.exe").Length
-          Write-Host "WJApp.exe 크기: $([math]::Round($size/1MB,1)) MB"
+          Write-Host "WJApp.exe size: $([math]::Round($size/1MB,1)) MB"
       - uses: actions/upload-artifact@v4
         with:
           name: WJApp-windows
@@ -74,7 +74,7 @@ jobs:
           Get-ChildItem -Recurse -Filter *.ps1 | ForEach-Object {
             $tokens = $null; $errs = $null
             [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errs)
-            if ($errs.Count -gt 0) { $bad++; $errs | ForEach-Object { Write-Host "문법 오류 $($_.Extent.File):$($_.Extent.StartLineNumber) $($_.Message)" } }
+            if ($errs.Count -gt 0) { $bad++; $errs | ForEach-Object { Write-Host "SYNTAX ERROR $($_.Extent.File):$($_.Extent.StartLineNumber) $($_.Message)" } }
             else { Write-Host "OK $($_.Name)" }
           }
           if ($bad -gt 0) { exit 1 }
@@ -115,31 +115,31 @@ jobs:
         run: |
           $app = Join-Path $env:LOCALAPPDATA 'WJApp'
           foreach ($f in @('app\wj_app.py', 'app\wj_app.ico', 'venv\Scripts\pythonw.exe', 'venv\Scripts\python.exe', 'api_url.txt')) {
-            if (-not (Test-Path (Join-Path $app $f))) { throw "설치 결과 없음: $f" } else { Write-Host "있음: $f" }
+            if (-not (Test-Path (Join-Path $app $f))) { throw "missing after install: $f" } else { Write-Host "found: $f" }
           }
           $name = [string]::Concat([char]0xC601, [char]0xC5C5, [char]0xC77C, [char]0xC9C0, '.lnk')
           foreach ($d in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Startup'))) {
             $l = Join-Path $d $name
-            if (-not (Test-Path $l)) { throw "아이콘 없음: $l" }
+            if (-not (Test-Path $l)) { throw "shortcut missing: $l" }
             $s = (New-Object -ComObject WScript.Shell).CreateShortcut($l)
-            Write-Host "아이콘 $l -> $($s.TargetPath) $($s.Arguments)"
-            if (-not (Test-Path $s.TargetPath)) { throw "아이콘 대상이 없음: $($s.TargetPath)" }
+            Write-Host "shortcut $l -> $($s.TargetPath) $($s.Arguments)"
+            if (-not (Test-Path $s.TargetPath)) { throw "shortcut target missing: $($s.TargetPath)" }
           }
           $bytes = [System.IO.File]::ReadAllBytes((Join-Path $app 'api_url.txt'))
-          if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) { throw 'api_url.txt 에 BOM 이 붙어 있음 (앱이 주소를 못 읽음)' }
+          if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) { throw 'api_url.txt has a BOM (the app would misread the URL)' }
           $url = [System.Text.Encoding]::UTF8.GetString($bytes)
-          if ($url -ne 'http://127.0.0.1:9/exec') { throw "api_url.txt 내용이 다름: $url" }
+          if ($url -ne 'http://127.0.0.1:9/exec') { throw "api_url.txt content differs: $url" }
           $v = & (Join-Path $app 'venv\Scripts\python.exe') (Join-Path $app 'app\wj_app.py') --version
-          Write-Host "설치된 앱 버전: $v"
-          if (-not $v) { throw '설치된 앱이 실행되지 않음' }
-          & (Join-Path $app 'venv\Scripts\python.exe') -c "import webview; print('pywebview 설치됨')"
-          if ($LASTEXITCODE -ne 0) { throw 'pywebview 가 설치되지 않음' }
+          Write-Host "installed app version: $v"
+          if (-not $v) { throw 'installed app does not run' }
+          & (Join-Path $app 'venv\Scripts\python.exe') -c "import webview; print('pywebview installed')"
+          if ($LASTEXITCODE -ne 0) { throw 'pywebview not installed' }
       - name: 다시 실행해도 서버 주소·저장본이 유지되는지 (재설치)
         shell: powershell
         run: |
           .\desktop_app\install_wj.ps1
           $app = Join-Path $env:LOCALAPPDATA 'WJApp'
-          if ((Get-Content (Join-Path $app 'api_url.txt') -Raw) -ne 'http://127.0.0.1:9/exec') { throw '재설치로 서버 주소가 바뀜' }
+          if ((Get-Content (Join-Path $app 'api_url.txt') -Raw) -ne 'http://127.0.0.1:9/exec') { throw 'reinstall changed the server URL' }
       - name: 윈도우 실제 환경 점검 (DPAPI 암호화, 앱 서버, 자동 로그인)
         run: python -I desktop_app/tests/win_smoke.py
       - name: 앱 시험을 윈도우에서도 (저장본·속도 도구)
@@ -152,5 +152,5 @@ jobs:
           .\desktop_app\install_wj.ps1 -Uninstall
           $name = [string]::Concat([char]0xC601, [char]0xC5C5, [char]0xC77C, [char]0xC9C0, '.lnk')
           foreach ($d in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Startup'))) {
-            if (Test-Path (Join-Path $d $name)) { throw "삭제 후에도 아이콘이 남음: $d" }
+            if (Test-Path (Join-Path $d $name)) { throw "shortcut remained after uninstall: $d" }
           }
