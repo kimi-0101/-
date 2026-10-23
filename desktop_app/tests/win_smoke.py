@@ -15,6 +15,9 @@ import mock_server   # noqa: E402
 import wj_app        # noqa: E402
 
 
+wj_app.safe_console()                                   # 윈도우 콘솔(cp1252)이 한글 때문에 죽지 않게
+
+
 def check(cond, msg):
     print(('PASS: ' if cond else 'FAIL: ') + msg, flush=True)
     if not cond:

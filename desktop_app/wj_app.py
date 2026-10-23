@@ -46,6 +46,17 @@ PAGE_RE = re.compile(r'^(journal|summary|monthly|yearly|msummary|ysummary|bep)_(
 PREFETCH = ('journal', 'summary', 'monthly', 'msummary', 'yearly', 'ysummary', 'bep')
 
 
+def safe_console():
+    """콘솔(윈도우 cp1252/cp949 등)이 한글을 못 쓰는 글자로 만나도 앱이 죽지 않게, 못 쓰는 글자는 ?로 바꿔 출력한다.
+    바로가기(pythonw)로 켠 경우처럼 콘솔이 없으면(sys.stdout 이 None) 할 일이 없다."""
+    for s_ in (sys.stdout, sys.stderr):
+        try:
+            if s_ is not None:
+                s_.reconfigure(errors='replace')
+        except Exception:
+            pass
+
+
 def data_dir():
     base = os.environ.get('LOCALAPPDATA') or os.path.join(str(Path.home()), '.local', 'share')
     d = Path(base) / 'WJApp'
@@ -838,6 +849,7 @@ def check_min_version(url):
 
 
 def main(argv=None):
+    safe_console()
     ap = argparse.ArgumentParser(description=APP_TITLE)
     ap.add_argument('--api-url', help='서버(Apps Script) 주소. 없으면 api_url.txt 또는 환경변수 WJ_API_URL')
     ap.add_argument('--browser', action='store_true', help='앱 창 대신 기본 브라우저로 열기 (시험용)')
