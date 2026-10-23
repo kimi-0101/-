@@ -81,7 +81,7 @@ jobs:
       - name: install_wj.ps1 실행 (바탕화면 아이콘 + 로그인 시 자동 실행)
         shell: powershell
         run: .\desktop_app\install_wj.ps1 -ApiUrl "http://127.0.0.1:9/exec" -Startup
-      - name: (진단) 바탕화면 아이콘 저장 — 영어 이름 vs 한글 이름 (실패해도 항상 출력)
+      - name: (diag) shortcut save - ascii name vs hangul name (always runs; ascii-only script on purpose)
         if: always()
         shell: powershell
         run: |
@@ -92,6 +92,7 @@ jobs:
           Write-Host "Desktop=$desk exists=$(Test-Path $desk)"
           Write-Host "pythonw exists=$(Test-Path $venvPyw)  ico exists=$(Test-Path $ico)"
           $korean = [string]::Concat([char]0xC601, [char]0xC5C5, [char]0xC77C, [char]0xC9C0, '.lnk')
+          Write-Host ("korean name length=" + $korean.Length)
           $sh = New-Object -ComObject WScript.Shell
           function Try-Save($label, $file, $target, $icon) {
             try {
@@ -100,15 +101,15 @@ jobs:
               $s.TargetPath = $target
               if ($icon) { $s.IconLocation = $icon }
               $s.Save()
-              Write-Host "[$label] 저장 성공: exists=$(Test-Path $p)"
+              Write-Host ("[" + $label + "] OK exists=" + (Test-Path $p))
               Remove-Item $p -Force -ErrorAction SilentlyContinue
-            } catch { Write-Host "[$label] 저장 실패: $($_.Exception.GetType().Name) $($_.Exception.Message)" }
+            } catch { Write-Host ("[" + $label + "] FAIL " + $_.Exception.GetType().Name + " " + $_.Exception.Message) }
           }
-          Try-Save '영어 이름 + notepad'             'wjtest.lnk'  'C:\Windows\System32\notepad.exe' $null
-          Try-Save '한글 이름 + notepad'             $korean       'C:\Windows\System32\notepad.exe' $null
-          Try-Save '영어 이름 + pythonw'             'wjtest.lnk'  $venvPyw $null
-          Try-Save '영어 이름 + pythonw + ico,0'     'wjtest.lnk'  $venvPyw "$ico,0"
-          Try-Save '한글 이름 + pythonw + ico,0'     $korean       $venvPyw "$ico,0"
+          Try-Save 'ascii + notepad'            'wjtest.lnk' 'C:\Windows\System32\notepad.exe' $null
+          Try-Save 'hangul + notepad'           $korean      'C:\Windows\System32\notepad.exe' $null
+          Try-Save 'ascii + pythonw'            'wjtest.lnk' $venvPyw $null
+          Try-Save 'ascii + pythonw + ico,0'    'wjtest.lnk' $venvPyw ($ico + ',0')
+          Try-Save 'hangul + pythonw + ico,0'   $korean      $venvPyw ($ico + ',0')
       - name: 설치 결과 확인
         shell: powershell
         run: |
