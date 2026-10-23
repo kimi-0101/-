@@ -10,7 +10,7 @@ Code.gs 와 같은 요청·응답 형식을 쓰므로, 앱·반영 프로그램�
 계정·비밀번호·반영 키·백업: python pc_server/wj_admin.py --help
 
 Code.gs 와 다른 점
-- 자동 번역(LanguageApp)은 구글 기능이라 없다. 저장 결과의 translated 는 항상 빈 목록이고 translate 요청은 아무것도 채우지 않는다.
+- 자동 번역은 구글 번역(LanguageApp) 대신 Gemini 로 한다(wj_translate.py). 키가 없으면 번역만 꺼지고 나머지는 그대로 동작한다.
 - 비밀번호는 PBKDF2(사용자별 소금)로 저장한다. 시트의 해시는 옮길 수 없으니 계정마다 비밀번호를 새로 정한다.
 """
 import argparse
@@ -134,8 +134,9 @@ def can_edit(user, c):
 class Store:
     """SQLite 위의 모든 동작. 연결 하나를 잠금으로 보호한다(사용자 수십 명 규모에는 충분)."""
 
-    def __init__(self, path=DEFAULT_DB):
+    def __init__(self, path=DEFAULT_DB, translator=None):
         self.path = path
+        self.translator = translator        # wj_translate.GeminiTranslator 또는 None(자동 번역 끔)
         if path != ':memory:':
             os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
@@ -347,10 +348,12 @@ class Store:
         self.audit(self.actor(user), 'save', cell_id, cur_ver, ver, cur['html'][:2000] if cur else '')
         return {'ok': True, 'version': ver}
 
-    def save(self, user, cell_id, html, base):
+    def save(self, user, cell_id, html, base, no_translate=False):
         with self.lock, self.tx():
             r = self._save_one(user, cell_id, html, base)
         r['translated'] = []
+        if r.get('ok') and self.translator and not no_translate and not re.search(r'_p\d+$', cell_id):
+            r['_tr'] = (cell_id, clean_html(html))              # handle() 가 잠금을 푼 뒤 번역한다(번역은 몇 초 걸려서)
         return r
 
     def save_many(self, user, items):
@@ -365,10 +368,66 @@ class Store:
                     results.append({'ok': False, 'error': str(ex)})
         return {'ok': True, 'results': results}
 
-    def translate(self, user, cell_ids):
-        if not cell_ids or len(cell_ids) > 12:
-            raise ApiError('요청이 올바르지 않습니다.')
-        return {'ok': True, 'results': []}                       # 자동 번역은 지원하지 않는다
+    # ---------- 자동 번역 (Code.gs autoTranslate_ 와 같은 규칙) ----------
+    def auto_translate(self, cell_id, html):
+        """방금 사람이 저장한 칸의 내용을 나머지 두 언어 칸에 번역해 넣는다. 번역된 언어 목록을 돌려준다.
+        - 이미 사람이 쓴 칸(auto 표시가 없고 내용이 있는 칸)은 건너뛴다.
+        - 이전에 자동 번역으로 채운 칸은 새 번역으로 바꾼다. 그 칸을 사람이 직접 고쳐 저장하면 그 뒤로는 사람이 쓴 칸이 된다.
+        - 번역 실패는 저장 결과에 영향을 주지 않는다(이력에만 남긴다). 네트워크 호출 동안에는 서버 잠금을 잡지 않는다."""
+        done = []
+        if not self.translator or not re.sub(r'<[^>]*>|&nbsp;', ' ', str(html or '')).strip():
+            return done
+        c = parse_cell(cell_id)
+
+        def human_written(cur):
+            return bool(cur and cur['auto'] != 'auto' and re.sub(r'<[^>]*>', '', cur['html']).strip())
+        for lang in ('ko', 'en', 'zh'):
+            if lang == c['lang']:
+                continue
+            tid = '|'.join([c['ent'], c['week'], c['dept'], c['item'], lang])
+            with self.lock:
+                if human_written(self.db.execute('SELECT * FROM journal WHERE cell_id=?', (tid,)).fetchone()):
+                    continue
+            try:
+                out = clean_html(self.translator.translate(html, c['lang'], lang))
+            except Exception as ex:
+                with self.lock:
+                    self.audit('auto-translate', 'translate_fail', tid, '', '', str(ex)[:300])
+                continue
+            if len(out) > MAX_HTML:
+                continue
+            with self.lock, self.tx():
+                cur = self.db.execute('SELECT * FROM journal WHERE cell_id=?', (tid,)).fetchone()
+                if human_written(cur):                           # 번역하는 사이에 사람이 쓴 칸이 되었으면 덮어쓰지 않는다
+                    continue
+                if cur:
+                    self.db.execute("UPDATE journal SET html=?, version=?, updated_by='auto-translate', updated_at=?, auto='auto' WHERE cell_id=?",
+                                    (out, cur['version'] + 1, now_iso(), tid))
+                else:
+                    self.db.execute("INSERT INTO journal(cell_id,html,version,updated_by,updated_at,auto) VALUES(?,?,1,'auto-translate',?,'auto')",
+                                    (tid, out, now_iso()))
+            done.append(lang)
+        return done
+
+    def translate_route(self, req):
+        """저장이 끝난 칸(ko/en/zh)의 나머지 두 언어를 채운다. 앱은 이 요청을 기다리지 않는다."""
+        jobs = []
+        with self.lock:
+            user = self.auth(req.get('token'))
+            ids = req.get('cellIds')
+            if not ids or len(ids) > 12:
+                raise ApiError('요청이 올바르지 않습니다.')
+            for cid in ids if self.translator else []:
+                try:
+                    c = parse_cell(cid)
+                except ApiError:
+                    continue
+                if not can_edit(user, c) or re.search(r'_p\d+$', c['item']):
+                    continue
+                r = self.db.execute('SELECT html FROM journal WHERE cell_id=?', (cid,)).fetchone()
+                if r:
+                    jobs.append((cid, r['html']))
+        return {'ok': True, 'results': [{'cellId': cid, 'translated': self.auto_translate(cid, html)} for cid, html in jobs]}
 
     def close_week(self, user, ent, week, closed):
         if user['role'] != 'hq':
@@ -485,9 +544,8 @@ class Store:
             'archive': lambda u: self.list_archive(u),
             'pull': lambda u: self.pull_many(u, req.get('ent'), [req.get('week')], bool(req.get('photos')))['results'][0],
             'pullMany': lambda u: self.pull_many(u, req.get('ent'), req.get('weeks'), bool(req.get('photos'))),
-            'save': lambda u: self.save(u, req.get('cellId'), req.get('html'), req.get('base')),
+            'save': lambda u: self.save(u, req.get('cellId'), req.get('html'), req.get('base'), req.get('tr') is False),
             'saveMany': lambda u: self.save_many(u, req.get('items')),
-            'translate': lambda u: self.translate(u, req.get('cellIds')),
             'presence': lambda u: self.set_presence(u, req.get('ent'), req.get('week'), req.get('cell')),
             'close': lambda u: self.close_week(u, req.get('ent'), req.get('week'), req.get('closed')),
         }
@@ -499,8 +557,14 @@ class Store:
         try:
             if not isinstance(req, dict):
                 raise ApiError('요청이 올바르지 않습니다.')
+            if req.get('a') == 'translate':                      # 번역은 네트워크 호출이 길어서 잠금 밖에서 한다
+                return self.translate_route(req)
             with self.lock:                                      # 연결 하나를 스레드끼리 섞어 쓰지 않도록 요청 단위로 직렬화
-                return self.route(req)
+                out = self.route(req)
+            tr = out.pop('_tr', None) if isinstance(out, dict) else None
+            if tr:
+                out['translated'] = self.auto_translate(*tr)
+            return out
         except ApiError as ex:
             return {'ok': False, 'auth': ex.auth, 'error': str(ex)}
 
@@ -598,10 +662,14 @@ def main(argv=None):
     ap.add_argument('--host', default='127.0.0.1', help='0.0.0.0 으로 하면 같은 네트워크의 다른 PC 도 접속')
     ap.add_argument('--port', type=int, default=8787)
     a = ap.parse_args(argv)
-    store = Store(a.db)
+    sys.path.insert(0, HERE)
+    import wj_translate
+    tr = wj_translate.GeminiTranslator.from_env()
+    store = Store(a.db, translator=tr)
     store.init_defaults()
     srv = make_server(store, a.host, a.port)
     print('영업일지 PC 서버: http://%s:%d/  (DB: %s)  끝내려면 Ctrl+C' % (a.host, a.port, a.db))
+    print('자동 번역: ' + ('켜짐 (Gemini)' if tr else '꺼짐 — Gemini 키가 없습니다(wj_data/gemini_key.txt 또는 환경변수 GEMINI_API_KEY)'))
     if not store.cfg('PUSH_KEY'):
         print('[안내] 반영 키가 아직 없습니다: python pc_server/wj_admin.py push-key')
     try:

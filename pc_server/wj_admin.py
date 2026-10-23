@@ -7,6 +7,7 @@
   python pc_server/wj_admin.py list-users
   python pc_server/wj_admin.py push-key                               ERP 숫자 반영 키를 새로 만든다 (이전 키는 무효)
   python pc_server/wj_admin.py import-backup wj_backup                backup_journal.py 가 받아 둔 날짜 폴더들을 DB 로 가져오기
+  python pc_server/wj_admin.py translate-test "안녕하세요 <b>3분기</b> 매출" --to en     Gemini 키·번역 동작 확인
   python pc_server/wj_admin.py backup --keep 30                       DB 를 <프로젝트>/wj_data/backup/YYYY-MM-DD.sqlite3 로 복사
 """
 import argparse
@@ -122,6 +123,10 @@ def main(argv=None):
     sub.add_parser('push-key')
     i = sub.add_parser('import-backup')
     i.add_argument('folder', help='backup_journal.py 의 --out 폴더 (날짜 폴더들이 들어 있는 곳)')
+    t = sub.add_parser('translate-test')
+    t.add_argument('text')
+    t.add_argument('--from', dest='src', default='ko', choices=['ko', 'en', 'zh'])
+    t.add_argument('--to', default='en', choices=['ko', 'en', 'zh'])
     b = sub.add_parser('backup')
     b.add_argument('--out', default=None, help='기본 <DB 폴더>/backup')
     b.add_argument('--keep', type=int, default=30)
@@ -156,6 +161,17 @@ def main(argv=None):
             st = import_backup(store, a.folder)
             print('가져오기 완료: 파일 %(files)d / 칸 %(cells)d / 건너뜀 %(skipped)d / 마감 %(closed)d / 깨진 파일 %(bad)d' % st)
             return 1 if st['bad'] else 0
+        elif a.cmd == 'translate-test':
+            import wj_translate
+            tr = wj_translate.GeminiTranslator.from_env()
+            if not tr:
+                print('[오류] Gemini 키가 없습니다. wj_data/gemini_key.txt 에 키를 넣거나 환경변수 GEMINI_API_KEY 를 설정하세요.')
+                return 2
+            try:
+                print(tr.translate(a.text, a.src, a.to))
+            except wj_translate.TranslateError as ex:
+                print('[실패] ' + str(ex))
+                return 1
         elif a.cmd == 'backup':
             out = a.out or os.path.join(os.path.dirname(os.path.abspath(a.db)), 'backup')
             dst, removed = backup_db(store, out, a.keep)

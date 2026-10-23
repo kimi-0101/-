@@ -27,14 +27,17 @@ python pc_server\wj_server.py                                  # 서버 켜기: 
 | `backup [--keep N]` | DB 를 `wj_data/backup/YYYY-MM-DD.sqlite3` 로 복사(서버가 켜져 있어도 안전). **복원 = 서버를 끄고 그 파일을 `wj.sqlite3` 로 덮어쓰기** |
 
 ## Code.gs 와 다른 점
-- **자동 번역 없음**: 구글 번역(LanguageApp)이 없어서 저장해도 다른 언어 칸이 자동으로 채워지지 않는다(`translated` 는 항상 빈 목록). 각 언어 칸은 직접 쓴다. 필요하면 나중에 번역 엔진을 `Store.translate` 에 연결한다.
+- **자동 번역은 Gemini 로 한다**(구글 번역 기능 대신, `wj_translate.py`). 저장하면 나머지 두 언어 칸이 자동으로 채워지고(칸에 "Auto-translated" 표시), 사람이 직접 쓴 칸은 덮어쓰지 않는 규칙도 Code.gs 와 같다. 글자만 번역하고 HTML 태그 구조가 달라진 결과는 버린다. 번역이 실패하거나 한도에 걸려도 저장은 그대로 되고 이력(log)에만 남는다.
+  - 키: 환경변수 `GEMINI_API_KEY` 또는 `wj_data/gemini_key.txt`(기존 `apps_script\weekly_journal\gemini_key.txt` 도 읽는다). 키가 없으면 번역만 꺼진다(서버 시작 시 "자동 번역: 꺼짐" 표시).
+  - 동작 확인: `python pc_server\wj_admin.py translate-test "안녕하세요 <b>3분기</b> 매출" --to en`
+  - 무료 키는 분당 호출 한도가 작아 한꺼번에 많이 저장하면 일부 칸의 번역이 건너뛰어질 수 있다(다음에 그 칸을 저장하면 다시 번역).
 - **비밀번호는 새로 정한다**: 시트의 해시는 옮길 수 없다. 대신 PBKDF2(사용자별 소금)로 저장한다.
 - 화면(HTML)은 시트·드라이브 대신 DB 에 한 줄로 저장한다(조각 나누기 불필요).
 - 로그인 5회 실패 시 15분 잠금, 로그인 유지 1일, 칸 버전 충돌 검사, 마감, "편집 중" 표시, 입구(site)별 계정 제한은 Code.gs 와 같다.
 
 ## 시험
 ```
-python -I pc_server\tests\test_server.py      # 서버·관리 도구 22개 항목 (실제 HTTP)
+python -I pc_server\tests\test_server.py      # 서버·번역·관리 도구 31개 항목 (실제 HTTP, 번역은 가짜 엔진)
 python -I pc_server\tests\test_backup.py
 ```
 

@@ -16,16 +16,32 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import wj_admin as A      # noqa: E402
 import wj_server as S     # noqa: E402
+import wj_translate as T  # noqa: E402
+import urllib.error       # noqa: E402
 
 PW = 'password-1234'
 TW_MD = 'TW|W42|MD|sales_comment|ko'
+
+
+class FakeTranslator:
+    """네트워크 없이 '[대상언어]원문' 으로 바꾸는 가짜 번역기. 태그는 그대로 둔다."""
+    def __init__(self):
+        self.calls = []
+        self.fail = False
+
+    def translate(self, html, src, dst):
+        self.calls.append((src, dst, html))
+        if self.fail:
+            raise T.TranslateError('boom')
+        return html.replace('>', '>[%s]' % dst, 1) if '<' in html else '[%s]%s' % (dst, html)
 
 
 class ServerCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
-        cls.store = S.Store(os.path.join(cls.tmp.name, 'wj.sqlite3'))
+        cls.translator = FakeTranslator()
+        cls.store = S.Store(os.path.join(cls.tmp.name, 'wj.sqlite3'), translator=cls.translator)
         cls.store.init_defaults()
         cls.store.upsert_user('md_tw', '대만 MD', 'TW', 'MD', 'writer')
         cls.store.upsert_user('md_hk', '홍콩 MD', 'HK', 'MD', 'writer')
@@ -108,7 +124,7 @@ class TestJournal(ServerCase):
         t = self.login()
         cid = 'TW|W10|MD|a_item|ko'
         r = self.post({'a': 'save', 'cellId': cid, 'html': '<b>안녕</b>', 'base': 0, 'token': t})
-        self.assertEqual((r['ok'], r['version'], r['translated']), (True, 1, []))
+        self.assertEqual((r['ok'], r['version'], sorted(r['translated'])), (True, 1, ['en', 'zh']))
         r = self.post({'a': 'save', 'cellId': cid, 'html': '둘째', 'base': 1, 'token': t})
         self.assertEqual(r['version'], 2)
         r = self.post({'a': 'save', 'cellId': cid, 'html': '충돌', 'base': 1, 'token': t})
@@ -195,9 +211,82 @@ class TestJournal(ServerCase):
         self.post({'a': 'presence', 'ent': 'TW', 'week': 'W16', 'cell': '', 'token': a})
         self.assertEqual(self.post({'a': 'pull', 'ent': 'TW', 'week': 'W16', 'token': b})['presence'], {})
 
-    def test_translate_is_noop(self):
+    def test_save_auto_translates_other_languages(self):
         t = self.login()
-        self.assertEqual(self.post({'a': 'translate', 'cellIds': ['TW|W1|MD|a|ko'], 'token': t}), {'ok': True, 'results': []})
+        cid = 'TW|W20|MD|tr1|ko'
+        r = self.post({'a': 'save', 'cellId': cid, 'html': '매출 증가', 'base': 0, 'token': t})
+        self.assertEqual(sorted(r['translated']), ['en', 'zh'])
+        cells = self.post({'a': 'pull', 'ent': 'TW', 'week': 'W20', 'token': t})['cells']
+        en, zh = cells['TW|W20|MD|tr1|en'], cells['TW|W20|MD|tr1|zh']
+        self.assertEqual((en['html'], en['auto'], en['version']), ('[en]매출 증가', True, 1))
+        self.assertEqual((zh['html'], zh['by']), ('[zh]매출 증가', 'auto-translate'))
+        # 원문을 고치면 자동 번역 칸은 새 번역으로 바뀐다(버전 +1)
+        self.post({'a': 'save', 'cellId': cid, 'html': '매출 감소', 'base': 1, 'token': t})
+        en = self.post({'a': 'pull', 'ent': 'TW', 'week': 'W20', 'token': t})['cells']['TW|W20|MD|tr1|en']
+        self.assertEqual((en['html'], en['version']), ('[en]매출 감소', 2))
+        # 사람이 쓴 칸은 덮어쓰지 않는다 — 영어 칸을 직접 고치면 그 뒤로는 사람 칸
+        self.post({'a': 'save', 'cellId': 'TW|W20|MD|tr1|en', 'html': 'Sales fell', 'base': 2, 'token': t, 'tr': False})
+        r = self.post({'a': 'save', 'cellId': cid, 'html': '매출 유지', 'base': 2, 'token': t})
+        self.assertEqual(r['translated'], ['zh'])
+        cells = self.post({'a': 'pull', 'ent': 'TW', 'week': 'W20', 'token': t})['cells']
+        self.assertEqual(cells['TW|W20|MD|tr1|en']['html'], 'Sales fell')
+        self.assertFalse(cells['TW|W20|MD|tr1|en']['auto'])
+
+    def test_translate_skips(self):
+        t = self.login()
+        n = len(self.translator.calls)
+        cid = 'TW|W21|MD|tr2|ko'
+        self.post({'a': 'save', 'cellId': cid, 'html': 'x', 'base': 0, 'token': t, 'tr': False})
+        self.assertEqual(len(self.translator.calls), n)                                           # tr:false 면 번역 안 함
+        self.post({'a': 'save', 'cellId': 'TW|W21|MD|tr3|ko', 'html': '<p> </p>', 'base': 0, 'token': t})
+        self.assertEqual(len(self.translator.calls), n)                                           # 글자가 없으면 번역 안 함
+        self.post({'a': 'save', 'cellId': 'TW|W21|VMD|vthis_p1|ko', 'html': '', 'base': 0, 'token': self.login('tw')})
+        self.assertEqual(len(self.translator.calls), n)                                           # 사진 칸은 번역 안 함
+
+    def test_translate_action(self):
+        t = self.login()
+        cid = 'TW|W22|MD|tr4|en'
+        self.post({'a': 'save', 'cellId': cid, 'html': 'Hello', 'base': 0, 'token': t, 'tr': False})
+        r = self.post({'a': 'translate', 'cellIds': [cid, 'TW|W22|EC|none|en', 'bad', 'TW|W22|MD|missing|en'], 'token': t})
+        self.assertEqual(r['results'], [{'cellId': cid, 'translated': ['ko', 'zh']}])             # 권한 없음·잘못된 칸·없는 칸은 건너뜀
+        cells = self.post({'a': 'pull', 'ent': 'TW', 'week': 'W22', 'token': t})['cells']
+        self.assertEqual(cells['TW|W22|MD|tr4|ko']['html'], '[ko]Hello')
+        self.assertFalse(self.post({'a': 'translate', 'cellIds': [], 'token': t})['ok'])
+        self.assertTrue(self.post({'a': 'translate', 'cellIds': [cid], 'token': 'bad'})['auth'])
+
+    def test_translate_failure_does_not_break_save(self):
+        t = self.login()
+        self.translator.fail = True
+        try:
+            r = self.post({'a': 'save', 'cellId': 'TW|W23|MD|tr5|ko', 'html': '실패 시험', 'base': 0, 'token': t})
+        finally:
+            self.translator.fail = False
+        self.assertEqual((r['ok'], r['version'], r['translated']), (True, 1, []))
+        self.assertEqual(self.store.db.execute("SELECT COUNT(*) c FROM log WHERE action='translate_fail'").fetchone()['c'] >= 2, True)
+        cells = self.post({'a': 'pull', 'ent': 'TW', 'week': 'W23', 'token': t})['cells']
+        self.assertEqual(list(cells), ['TW|W23|MD|tr5|ko'])
+
+    def test_slow_translation_does_not_block_others(self):
+        t = self.login()
+        gate = threading.Event()
+        orig = self.translator.translate
+
+        def slow(html, src, dst):
+            gate.wait(5)
+            return orig(html, src, dst)
+        self.translator.translate = slow
+        try:
+            th = threading.Thread(target=lambda: self.post({'a': 'save', 'cellId': 'TW|W24|MD|tr6|ko', 'html': '느림', 'base': 0, 'token': t}))
+            th.start()
+            import time
+            time.sleep(0.5)
+            t0 = time.time()
+            self.assertTrue(self.post({'a': 'pull', 'ent': 'TW', 'week': 'W24', 'token': t})['ok'])      # 번역 중에도 다른 요청은 바로 처리
+            self.assertLess(time.time() - t0, 2)
+        finally:
+            gate.set()
+            th.join()
+            self.translator.translate = orig
 
     def test_concurrent_saves_one_wins(self):
         t = self.login()
@@ -253,6 +342,77 @@ class TestPages(ServerCase):
             self.assertIn('PAGE="journal_TW"', r.read().decode('utf-8'))
         with urllib.request.urlopen(base + 'healthz') as r:
             self.assertEqual(r.read(), b'ok')
+
+
+class TestGeminiTranslator(unittest.TestCase):
+    def reply(self, text):
+        return {'candidates': [{'content': {'parts': [{'text': text}]}}]}
+
+    def make(self, responses):
+        calls, sleeps = [], []
+
+        def post(url, headers, body, timeout):
+            calls.append((url, headers, json.loads(body)))
+            r = responses.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            return r
+        return T.GeminiTranslator('KEY', post=post, sleep=sleeps.append, retry_wait=1), calls, sleeps
+
+    def http(self, code):
+        return urllib.error.HTTPError('u', code, 'm', {}, None)
+
+    def test_translate_and_prompt(self):
+        tr, calls, _ = self.make([self.reply('```html\n<p>Sales <b>up</b></p>\n```')])
+        self.assertEqual(tr.translate('<p>매출 <b>상승</b></p>', 'ko', 'en'), '<p>Sales <b>up</b></p>')
+        url, headers, body = calls[0]
+        self.assertIn('gemini-2.5-flash:generateContent', url)
+        self.assertEqual(headers['x-goog-api-key'], 'KEY')
+        prompt = body['contents'][0]['parts'][0]['text']
+        self.assertIn('Korean to English', prompt)
+        self.assertIn('<p>매출 <b>상승</b></p>', prompt)
+
+    def test_bad_tag_structure_retried_then_rejected(self):
+        tr, calls, _ = self.make([self.reply('<p>no bold</p>'), self.reply('<p>Sales <b>up</b></p>')])
+        self.assertEqual(tr.translate('<p>매출 <b>상승</b></p>', 'ko', 'en'), '<p>Sales <b>up</b></p>')
+        self.assertEqual(len(calls), 2)
+        tr, _, _ = self.make([self.reply('<p>x</p>'), self.reply('<p>y</p>')])
+        with self.assertRaises(T.TranslateError):
+            tr.translate('<p>매출 <b>상승</b></p>', 'ko', 'en')
+
+    def test_retry_on_rate_limit_and_model_alias(self):
+        tr, calls, sleeps = self.make([self.http(429), self.http(503), self.reply('Sales')])
+        self.assertEqual(tr.translate('매출', 'ko', 'en'), 'Sales')
+        self.assertEqual(sleeps, [1, 2])
+        tr, calls, _ = self.make([self.http(404), self.reply('Sales')])
+        self.assertEqual(tr.translate('매출', 'ko', 'en'), 'Sales')
+        self.assertIn('gemini-flash-latest', calls[1][0])
+
+    def test_gives_up_and_rejects_bad_input(self):
+        tr, calls, _ = self.make([self.http(429)] * 4)
+        with self.assertRaises(T.TranslateError):
+            tr.translate('매출', 'ko', 'en')
+        self.assertEqual(len(calls), 4)
+        tr, _, _ = self.make([self.http(400)])
+        with self.assertRaises(T.TranslateError):
+            tr.translate('매출', 'ko', 'en')
+        with self.assertRaises(T.TranslateError):
+            tr.translate('x', 'ko', 'ko')
+        tr, _, _ = self.make([{'candidates': []}])
+        with self.assertRaises(T.TranslateError):
+            tr.translate('매출', 'ko', 'en')
+
+    def test_key_lookup(self):
+        old = os.environ.get('GEMINI_API_KEY')
+        os.environ['GEMINI_API_KEY'] = ' abc '
+        try:
+            self.assertEqual(T.find_key(), 'abc')
+            self.assertEqual(T.GeminiTranslator.from_env().key, 'abc')
+        finally:
+            if old is None:
+                os.environ.pop('GEMINI_API_KEY')
+            else:
+                os.environ['GEMINI_API_KEY'] = old
 
 
 class TestAdmin(unittest.TestCase):
