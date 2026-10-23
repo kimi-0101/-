@@ -64,6 +64,8 @@ if (-not (Test-Path $urlFile)) { throw '서버 주소가 없습니다. -ApiUrl �
 
 # 5) 바탕화면(과 선택 시 시작 프로그램) 아이콘
 function New-WJLink($path) {
+    $parent = Split-Path $path -Parent
+    if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }   # 바탕화면/시작 프로그램 폴더가 없는 PC 에서도 되도록
     $sh = New-Object -ComObject WScript.Shell
     $s = $sh.CreateShortcut($path)
     $s.TargetPath = Join-Path $Venv 'Scripts\pythonw.exe'
