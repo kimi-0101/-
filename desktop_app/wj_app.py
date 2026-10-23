@@ -12,6 +12,8 @@
        python wj_app.py --browser       (앱 창 대신 기본 브라우저로 열기: 시험용)
 """
 import argparse
+import datetime
+import hashlib
 import http.cookies
 import http.server
 import json
@@ -27,11 +29,18 @@ import urllib.request
 import webbrowser
 from pathlib import Path
 
-APP_VERSION = '0.2.0'
+APP_VERSION = '0.3.0'
 APP_TITLE = '주간영업일지'
 SESSION_HOURS = 24            # 서버의 로그인 유지(1일)와 맞춤
 PAGE_TTL = 3 * 24 * 3600      # 저장해 둔 화면을 이 기간까지는 '먼저 바로' 열어 준다 (숫자는 화면 위의 '데이터 기준'에 표시됨)
 REFRESH_AFTER = 5 * 60        # 저장된 지 이보다 오래된 화면은 열어 주면서 뒤에서 새로 받아 둔다
+DATA_FRESH = 15               # 글 데이터 저장본이 이 초보다 새것이면 서버를 부르지 않고 그대로 준다
+OPEN_GAP = 30                 # 같은 데이터를 이 초 넘게 안 불렀다가 부르면 '화면을 새로 연 것'으로 보고, 오래된 저장본이라도 먼저 주고 뒤에서 새로 받는다
+                              # (그 안에 되풀이되는 요청은 화면이 주기적으로 확인하는 것으로 보고, DATA_FRESH 보다 오래됐으면 서버에서 받는다)
+DATA_TTL = 14 * 24 * 3600     # 이 기간이 지난 저장본은 쓰지 않는다
+WEEK_RE = re.compile(r'^[WM]\d{1,2}$')
+PHOTO_CELL = re.compile(r'\|(vcomp|vthis)_p[1-4]\|ko$')
+SUMFILL_RE = re.compile(r'<[^>]*\bid="sumfill"[^>]*>')
 PAGE_RE = re.compile(r'^(journal|summary|monthly|yearly|msummary|ysummary|bep)_(HK|TW)(@(W|M)\d{1,2})?$')
 PREFETCH = ('journal', 'summary', 'monthly', 'msummary', 'yearly', 'ysummary', 'bep')
 
@@ -79,6 +88,8 @@ class State:
         self.session = self._load_session()
         self.page_ttl = PAGE_TTL
         self.inflight = {}
+        self.dinflight = set()                     # 뒤에서 새로 받는 중인 글 데이터 (같은 것을 겹쳐 받지 않게)
+        self.last_req = {}                         # 글 데이터 이름 → 마지막으로 요청받은 시각
         self.port = 0
 
     # ---- 로그인 상태 ----
@@ -127,6 +138,54 @@ class State:
         for f in (self.root / 'cache').glob('*.json'):
             f.unlink()
 
+    # ---- 글 데이터 저장소 (일지 글·사진 pull, 보관 목록 archive) ----
+    def uid(self):
+        return ((self.session or {}).get('me') or {}).get('id', '')
+
+    def _dpath(self, key):
+        return self.root / 'cache' / ('data_' + hashlib.sha1(key.encode('utf-8')).hexdigest()[:20] + '.json')
+
+    def data_get(self, key):
+        """저장본. 다른 사람이 저장한 것이거나 너무 오래됐으면 None (같은 PC 를 여러 명이 쓸 때 남의 권한으로 받은 글이 보이지 않게)."""
+        try:
+            e = json.loads(self._dpath(key).read_text(encoding='utf-8'))
+        except Exception:
+            return None
+        if e.get('key') != key or e.get('uid') != self.uid() or time.time() - e.get('at', 0) > DATA_TTL:
+            return None
+        return e
+
+    def data_put(self, key, fields, at=None):
+        e = dict(fields, key=key, uid=self.uid(), at=time.time() if at is None else at)
+        p = self._dpath(key)
+        tmp = p.with_suffix('.tmp')
+        tmp.write_text(json.dumps(e, ensure_ascii=False), encoding='utf-8')
+        tmp.replace(p)
+        return e
+
+    def data_keys(self):
+        """저장해 둔 글 데이터의 이름 목록 (내 것만)"""
+        out = []
+        for f in (self.root / 'cache').glob('data_*.json'):
+            try:
+                e = json.loads(f.read_text(encoding='utf-8'))
+            except Exception:
+                continue
+            if e.get('uid') == self.uid() and time.time() - e.get('at', 0) <= DATA_TTL:
+                out.append(e['key'])
+        return out
+
+    # ---- 내가 쓴 글의 기록 (서버가 안 되거나 충돌이 나도 입력한 글이 남도록) ----
+    def save_log(self, rec):
+        try:
+            d = self.root / 'backup'
+            d.mkdir(exist_ok=True)
+            f = d / ('saves_' + datetime.date.today().strftime('%Y-%m') + '.jsonl')
+            with open(f, 'a', encoding='utf-8') as fh:
+                fh.write(json.dumps(rec, ensure_ascii=False) + '\n')
+        except OSError:
+            pass
+
 
 def upstream(st, body, retries=1, timeout=120):
     """기존 서버(Apps Script)에 요청. 읽기 요청만 재시도한다 (저장은 재시도하면 '이미 저장됨'이 충돌로 보일 수 있어 하지 않음)."""
@@ -166,6 +225,7 @@ def load_now(st, name):
         r = upstream(st, {'a': 'page', 'name': name, 'token': tok}, retries=2)
         if r.get('ok'):
             st.cache_put(name, r)
+            prefetch_data_for_html(st, r.get('html', ''))
         elif r.get('auth'):
             st.clear_session()
         return r
@@ -215,6 +275,10 @@ def prefetch(st, delay=3.0):
 
     def run():
         time.sleep(delay)
+        try:
+            refresh_all_data(st)                                       # 지난번에 쓴 글 데이터를 먼저 새로 받아 둔다 (가장 자주 열리는 것)
+        except Exception:
+            pass
         names = [f'{k}_{e}' for e in ents for k in PREFETCH]
         for n in names:
             if n == first or not st.session:
@@ -228,6 +292,230 @@ def prefetch(st, delay=3.0):
                 pass
             time.sleep(0.5)
     threading.Thread(target=run, daemon=True).start()
+
+
+# ---------------------------------------------------------------------------------------------------------
+# 글 데이터(일지 글·사진, 보관 목록) 저장본: 화면을 바꿀 때마다 화면 안의 스크립트가 구글에 새로 묻던 것을 PC 에서 바로 답한다.
+# 저장·마감 같은 쓰기는 항상 서버로 가고(버전 충돌 검사는 서버가 함), 저장본은 그 결과로 바로 고쳐 둔다.
+# ---------------------------------------------------------------------------------------------------------
+def pull_key(ent, week, photos):
+    return f'pull|{ent}|{week}|{1 if photos else 0}'
+
+
+def fetch_weeks(st, ent, weeks, photos, retries=2):
+    """서버에서 여러 주를 한 번에(pullMany) 받아 저장본을 고치고, {주: 결과} 로 돌려준다. 서버가 안 되면 UpstreamError."""
+    r = upstream(st, {'a': 'pullMany', 'ent': ent, 'weeks': list(weeks), 'photos': bool(photos), 'token': (st.session or {}).get('token', '')}, retries=retries)
+    if r.get('auth'):
+        st.clear_session()
+        return {w: r for w in weeks}
+    got = {}
+    res = r.get('results') if r.get('ok') else None
+    for i, w in enumerate(weeks):
+        one = res[i] if res and i < len(res) else {'ok': False, 'error': r.get('error', '받지 못했습니다.')}
+        got[w] = one
+        if one.get('ok'):
+            st.data_put(pull_key(ent, w, photos), {'closed': one.get('closed', False), 'cells': one.get('cells', {})})
+    return got
+
+
+def as_pull_result(st, e):
+    return {'ok': True, 'me': (st.session or {}).get('me') or {}, 'closed': e.get('closed', False), 'cells': e.get('cells', {}),
+            'presence': {}, 'now': int(time.time() * 1000), 'cached': True}
+
+
+def refresh_data_later(st, ent, weeks, photos):
+    todo = [w for w in weeks if (ent, w, photos) not in st.dinflight]
+    if not todo:
+        return
+    with st.lock:
+        st.dinflight.update((ent, w, photos) for w in todo)
+
+    def run():
+        try:
+            fetch_weeks(st, ent, todo, photos)
+        except Exception:
+            pass
+        finally:
+            with st.lock:
+                for w in todo:
+                    st.dinflight.discard((ent, w, photos))
+    threading.Thread(target=run, daemon=True).start()
+
+
+def handle_pull(st, body):
+    """pull / pullMany. 저장본이 있으면 서버를 기다리지 않고 답한다 (규칙은 위 DATA_FRESH / OPEN_GAP 설명)."""
+    a, ent, photos = body.get('a'), body.get('ent'), bool(body.get('photos'))
+    weeks = body.get('weeks') if a == 'pullMany' else [body.get('week')]
+    if ent not in ('HK', 'TW') or not isinstance(weeks, list) or not 0 < len(weeks) <= 60 or not all(isinstance(w, str) and WEEK_RE.match(w) for w in weeks):
+        return None                                                  # 모양이 이상하면 저장본을 쓰지 않고 서버가 판단하게 한다
+    now = t0 = time.time()
+    out, live, stale = {}, [], []
+    for w in dict.fromkeys(weeks):
+        key = pull_key(ent, w, photos)
+        opened = now - st.last_req.get(key, 0) > OPEN_GAP
+        st.last_req[key] = now
+        e = st.data_get(key)
+        if e and now - e['at'] < DATA_FRESH:
+            out[w] = as_pull_result(st, e)
+        elif e and opened:
+            out[w] = as_pull_result(st, e)
+            stale.append(w)
+        else:
+            live.append(w)
+    if live:
+        try:
+            got = fetch_weeks(st, ent, live, photos, retries=1)          # 사용자가 기다리는 요청이라 재시도는 한 번만
+        except UpstreamError:
+            got = {}
+            for w in live:                                          # 인터넷이 안 되면 오래된 저장본이라도 준다
+                e = st.data_get(pull_key(ent, w, photos))
+                got[w] = dict(as_pull_result(st, e), stale=True) if e else {'ok': False, 'error': '서버에 연결하지 못했습니다.'}
+        for w in live:
+            if got[w].get('auth'):
+                return got[w]
+        out.update(got)
+    if stale:
+        refresh_data_later(st, ent, stale, photos)
+    log(st, f"[글] {ent} {','.join(dict.fromkeys(weeks))} {time.time() - t0:.2f}초 (저장본 {len(out) - len(live)}개 / 서버 {len(live)}개)")
+    if a == 'pull':
+        return out[weeks[0]]
+    return {'ok': True, 'results': [out[w] for w in weeks]}
+
+
+def handle_archive(st, body):
+    now = time.time()
+    opened = now - st.last_req.get('archive', 0) > OPEN_GAP
+    st.last_req['archive'] = now
+    e = st.data_get('archive')
+    if e and (now - e['at'] < DATA_FRESH or opened):
+        if now - e['at'] >= DATA_FRESH and 'archive' not in st.dinflight:
+            st.dinflight.add('archive')
+
+            def run():
+                try:
+                    refresh_archive(st)
+                except Exception:
+                    pass
+                finally:
+                    st.dinflight.discard('archive')
+            threading.Thread(target=run, daemon=True).start()
+        return {'ok': True, 'weeks': e.get('weeks', []), 'cached': True}
+    try:
+        return refresh_archive(st)
+    except UpstreamError:
+        if e:
+            return {'ok': True, 'weeks': e.get('weeks', []), 'cached': True, 'stale': True}
+        return {'ok': False, 'error': '서버에 연결하지 못했습니다.'}
+
+
+def refresh_archive(st):
+    r = upstream(st, {'a': 'archive', 'token': (st.session or {}).get('token', '')}, retries=2)
+    if r.get('auth'):
+        st.clear_session()
+    elif r.get('ok'):
+        st.data_put('archive', {'weeks': r.get('weeks', [])})
+    return r
+
+
+def prefetch_data_for_html(st, html):
+    """받아 온 화면 안의 'sumfill' 표시(법인·주차)를 읽어, 그 화면이 열릴 때 요청할 글 데이터를 미리 받아 둔다."""
+    m = SUMFILL_RE.search(html or '')
+    if not m:
+        return
+    ent = re.search(r'data-ent="(HK|TW)"', m.group(0))
+    week = re.search(r'data-week="([WM]\d{1,2})"', m.group(0))
+    if not (ent and week):
+        return
+    key = pull_key(ent.group(1), week.group(1), True)                    # 화면은 사진까지(photos:true) 요청한다
+    e = st.data_get(key)
+    if e and time.time() - e['at'] < DATA_FRESH:
+        return
+    refresh_data_later(st, ent.group(1), [week.group(1)], True)
+
+
+def refresh_all_data(st):
+    """저장해 둔 글 데이터를 모두 서버에서 새로 받는다 (법인·사진 여부별로 묶어서 한 번에). 새로 받은 주 수를 돌려준다."""
+    groups = {}
+    for key in st.data_keys():
+        if key == 'archive':
+            continue
+        _, ent, week, ph = key.split('|')
+        groups.setdefault((ent, ph == '1'), []).append(week)
+    n = 0
+    for (ent, ph), weeks in groups.items():
+        for i in range(0, len(weeks), 60):
+            try:
+                got = fetch_weeks(st, ent, weeks[i:i + 60], ph)
+                n += sum(1 for r in got.values() if r.get('ok'))
+            except UpstreamError:
+                pass
+    if 'archive' in st.data_keys():
+        try:
+            refresh_archive(st)
+        except UpstreamError:
+            pass
+    return n
+
+
+def apply_writes(st, body, r):
+    """저장·마감이 서버에서 성공한 뒤 저장본을 바로 고치고, 번역 등 서버가 더 바꾼 칸은 뒤에서 새로 받는다."""
+    a = body.get('a')
+    me = (st.session or {}).get('me') or {}
+    who = f"{me.get('id', '')} ({(st.session or {}).get('who', '')})"
+    iso = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+    weeks = set()
+    if a in ('save', 'saveMany'):
+        items = body.get('items') if a == 'saveMany' else [{'cellId': body.get('cellId'), 'html': body.get('html')}]
+        results = r.get('results') if a == 'saveMany' else [r]
+        for it, res in zip(items or [], results or []):
+            cid = str(it.get('cellId', ''))
+            parts = cid.split('|')
+            if len(parts) != 5 or not isinstance(res, dict):
+                continue
+            ent, week = parts[0], parts[1]
+            if res.get('ok'):
+                cell = {'html': str(it.get('html') or ''), 'version': res.get('version'), 'by': who, 'at': iso, 'auto': False}
+            elif res.get('conflict') and isinstance(res.get('current'), dict):
+                c = res['current']
+                cell = {'html': c.get('html', ''), 'version': c.get('version'), 'by': c.get('by', ''), 'at': c.get('at', ''), 'auto': False}
+            else:
+                continue
+            for ph in (False, True):
+                e = st.data_get(pull_key(ent, week, ph))
+                if e:
+                    e['cells'][cid] = dict(cell, html=None) if (not ph and PHOTO_CELL.search(cid)) else cell
+                    st.data_put(pull_key(ent, week, ph), {'closed': e.get('closed', False), 'cells': e['cells']}, at=e['at'])
+            weeks.add((ent, week))
+    elif a == 'close' and r.get('ok'):
+        for ph in (False, True):
+            e = st.data_get(pull_key(body.get('ent'), body.get('week'), ph))
+            if e:
+                st.data_put(pull_key(body.get('ent'), body.get('week'), ph), {'closed': bool(body.get('closed')), 'cells': e['cells']}, at=e['at'])
+        weeks.add((body.get('ent'), body.get('week')))
+    elif a == 'translate':
+        for cid in body.get('cellIds') or []:
+            parts = str(cid).split('|')
+            if len(parts) == 5:
+                weeks.add((parts[0], parts[1]))
+    for ent, week in weeks:                                              # 번역으로 다른 언어 칸이 바뀌었을 수 있으니 그 주는 뒤에서 새로 받는다
+        for ph in (False, True):
+            if st.data_get(pull_key(ent, week, ph)):
+                refresh_data_later(st, ent, [week], ph)
+
+
+def log_write(st, body, r, failed=False):
+    a = body.get('a')
+    me = (st.session or {}).get('me') or {}
+    items = body.get('items') if a == 'saveMany' else [{'cellId': body.get('cellId'), 'html': body.get('html'), 'base': body.get('base')}]
+    rec_items = []
+    for it in items or []:
+        cid = str(it.get('cellId', ''))
+        photo = bool(PHOTO_CELL.search(cid)) or bool(re.search(r'_p\d+\|', cid))
+        rec_items.append({'cellId': cid, 'base': it.get('base'), 'html': None if photo else it.get('html'), 'htmlLen': len(str(it.get('html') or ''))})
+    results = ['connection-failed'] if failed else [('ok:%s' % x.get('version') if x.get('ok') else ('conflict' if x.get('conflict') else 'error:%s' % x.get('error')))
+                                                    for x in ((r.get('results') if a == 'saveMany' else [r]) or []) if isinstance(x, dict)]
+    st.save_log({'t': datetime.datetime.now().isoformat(timespec='seconds'), 'who': f"{me.get('id', '')} ({(st.session or {}).get('who', '')})",
+                 'a': a, 'items': rec_items, 'results': results})
 
 
 def default_page(st):
@@ -363,6 +651,8 @@ def make_handler(st):
                     return self._json({'ok': False, 'auth': True})
                 if PAGE_RE.match(name):
                     r = fetch_page(st, name, fresh=True)
+                    if r.get('ok'):
+                        refresh_all_data(st)                          # 글 데이터도 함께 새로 받는다
                     return self._json({'ok': bool(r.get('ok')), 'auth': bool(r.get('auth'))})
                 return self._json({'ok': False})
             if path != '/api':
@@ -387,13 +677,29 @@ def make_handler(st):
                     pass
                 st.clear_session()
                 return self._json({'ok': True})
+            if a in ('pull', 'pullMany'):                          # 글 데이터: 저장본이 있으면 바로 답한다
+                r = handle_pull(st, body)
+                if r is not None:
+                    return self._json(r)
+            if a == 'archive':
+                return self._json(handle_archive(st, body))
             body['token'] = st.session['token']                    # 그 밖의 요청(저장, 번역, 불러오기 …)은 진짜 열쇠를 붙여 기존 서버로 전달
+            is_write = a in ('save', 'saveMany')
             try:
                 r = upstream(st, body, retries=2 if a in ('pull', 'pullMany', 'archive', 'presence') else 0)
             except UpstreamError:
+                if is_write:
+                    log_write(st, body, {}, failed=True)
                 return self._json({'ok': False, 'error': '서버에 연결하지 못했습니다.'})
             if r.get('auth'):
                 st.clear_session()
+            elif a in ('save', 'saveMany', 'close', 'translate') and isinstance(r, dict):
+                if is_write:
+                    log_write(st, body, r)
+                try:
+                    apply_writes(st, body, r)
+                except Exception as ex:                                # 저장본 갱신이 실패해도 저장 결과는 그대로 돌려준다
+                    log(st, f'[저장본] 갱신 실패: {ex!r}')
             return self._json(r)
     return H
 

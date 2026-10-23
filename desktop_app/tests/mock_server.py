@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """Apps Script 흉내 서버 (시험용): 로그인·화면·저장 요청에 답하고, 받은 요청을 기록한다."""
-import http.server, json, socketserver, threading
+import http.server, json, re, socketserver, threading, time
 
 REAL_TOKEN = 'REALTOKEN_0123456789'
 
@@ -22,12 +22,34 @@ class Mock:
         self.expire = False
         self.url = ''
         self.pages = {}
+        self.journal = {}        # 칸ID → {html, version, by, at}  (일지 글 흉내)
+        self.closed = set()      # (법인, 주) 마감
+        self.delay = 0           # pull 계열 응답을 이만큼(초) 늦춘다 (구글이 느린 상황 흉내)
+        self.pulls = []          # pull/pullMany 로 요청된 (법인, [주], photos)
 
     def page_html(self, name):
         if name in self.pages:
             return self.pages[name].replace('__API__', self.url)
         other = 'summary_TW' if name.startswith('journal') else 'journal_TW'
         return PAGE.replace('__NAME__', name.upper()).replace('__OTHER__', other).replace('__API__', self.url)
+
+    def pull_one(self, ent, week, photos):
+        pre = f'{ent}|{week}|'
+        cells = {}
+        for cid, c in self.journal.items():
+            if cid.startswith(pre):
+                hide = (not photos) and re.search(r'\|(vcomp|vthis)_p[1-4]\|ko$', cid)
+                cells[cid] = dict(c, html=None if hide else c['html'], auto=False)
+        return {'ok': True, 'me': {'id': 'tw', 'ent': 'TW', 'role': 'writer', 'sid': 'abc123'}, 'closed': (ent, week) in self.closed,
+                'cells': cells, 'presence': {}, 'now': int(time.time() * 1000)}
+
+    def save_one(self, cid, html, base, who='tw (t)'):
+        cur = self.journal.get(cid)
+        ver = cur['version'] if cur else 0
+        if ver != int(base or 0):
+            return {'ok': False, 'conflict': True, 'current': dict(cur or {'html': '', 'version': 0, 'by': '', 'at': ''})}
+        self.journal[cid] = {'html': html, 'version': ver + 1, 'by': who, 'at': '2026-10-23T01:00:00.000Z'}
+        return {'ok': True, 'version': ver + 1}
 
     def count(self, a):
         return sum(1 for x, _ in self.calls if x == a)
@@ -56,8 +78,23 @@ def start(mock):
             if a == 'page':
                 mock.pagenames.append(req['name'])
                 return self._out(200, json.dumps({'ok': True, 'html': mock.page_html(req['name']), 'status': 'final', 'asOf': '2026-10-16 10:00'}))
+            if a in ('pull', 'pullMany', 'archive') and mock.delay:
+                time.sleep(mock.delay)
+            if a == 'pull':
+                mock.pulls.append((req.get('ent'), [req.get('week')], bool(req.get('photos'))))
+                return self._out(200, json.dumps(mock.pull_one(req['ent'], req['week'], bool(req.get('photos')))))
+            if a == 'pullMany':
+                mock.pulls.append((req.get('ent'), list(req['weeks']), bool(req.get('photos'))))
+                return self._out(200, json.dumps({'ok': True, 'results': [mock.pull_one(req['ent'], w, bool(req.get('photos'))) for w in req['weeks']]}))
+            if a == 'archive':
+                return self._out(200, json.dumps({'ok': True, 'weeks': [{'week': 'W40', 'pages': ['journal_TW@W40'], 'status': 'final', 'asOf': '9/28-10/4', 'closed': {'HK': False, 'TW': False}}]}))
             if a == 'save':
-                return self._out(200, json.dumps({'ok': True, 'version': 1}))
+                return self._out(200, json.dumps(mock.save_one(req['cellId'], req.get('html'), req.get('base'))))
+            if a == 'saveMany':
+                return self._out(200, json.dumps({'ok': True, 'results': [mock.save_one(i['cellId'], i.get('html'), i.get('base')) for i in req['items']]}))
+            if a == 'close':
+                (mock.closed.add if req.get('closed') else mock.closed.discard)((req['ent'], req['week']))
+                return self._out(200, json.dumps({'ok': True, 'closed': bool(req.get('closed'))}))
             if a == 'logout':
                 return self._out(200, json.dumps({'ok': True}))
             return self._out(200, json.dumps({'ok': True}))
