@@ -57,6 +57,28 @@ def safe_console():
             pass
 
 
+def atomic_write(path, text):
+    """반쪽 파일이 남지 않게 임시 파일에 쓴 뒤 교체한다. 임시 파일 이름은 호출마다 달라서(스레드·프로세스 구분) 같은 칸을 동시에 갱신해도 서로 덮어쓰지 않는다.
+    윈도우는 읽는 중인 파일 위로 교체하면 잠깐 PermissionError 가 나므로 짧게 다시 시도한다."""
+    path = Path(path)
+    tmp = path.with_name(f'{path.name}.{os.getpid()}.{threading.get_ident()}.{secrets.token_hex(3)}.tmp')
+    tmp.write_text(text, encoding='utf-8')
+    try:
+        for i in range(8):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if i == 7:
+                    raise
+                time.sleep(0.05 * (i + 1))
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
 def data_dir():
     base = os.environ.get('LOCALAPPDATA') or os.path.join(str(Path.home()), '.local', 'share')
     d = Path(base) / 'WJApp'
@@ -207,9 +229,7 @@ class State:
 
     def cache_put(self, name, r):
         c = dict(name=name, html=r['html'], status=r.get('status', ''), asOf=r.get('asOf', ''), at=time.time())
-        tmp = self._cpath(name).with_suffix('.tmp')
-        tmp.write_text(json.dumps(c, ensure_ascii=False), encoding='utf-8')
-        tmp.replace(self._cpath(name))             # 쓰는 도중 꺼져도 반쪽 파일이 남지 않게 교체 방식으로 저장
+        atomic_write(self._cpath(name), json.dumps(c, ensure_ascii=False))     # 쓰는 도중 꺼져도 반쪽 파일이 남지 않게 교체 방식으로 저장
 
     def cache_clear(self):
         for f in (self.root / 'cache').glob('*.json'):
@@ -224,9 +244,16 @@ class State:
 
     def data_get(self, key):
         """저장본. 다른 사람이 저장한 것이거나 너무 오래됐으면 None (같은 PC 를 여러 명이 쓸 때 남의 권한으로 받은 글이 보이지 않게)."""
-        try:
-            e = json.loads(self._dpath(key).read_text(encoding='utf-8'))
-        except Exception:
+        e = None
+        for _ in range(3):
+            try:
+                e = json.loads(self._dpath(key).read_text(encoding='utf-8'))
+                break
+            except PermissionError:                                   # 윈도우: 다른 스레드가 교체하는 순간
+                time.sleep(0.03)
+            except Exception:
+                return None
+        if e is None:
             return None
         if e.get('key') != key or e.get('uid') != self.uid() or time.time() - e.get('at', 0) > DATA_TTL:
             return None
@@ -234,10 +261,7 @@ class State:
 
     def data_put(self, key, fields, at=None):
         e = dict(fields, key=key, uid=self.uid(), at=time.time() if at is None else at)
-        p = self._dpath(key)
-        tmp = p.with_suffix('.tmp')
-        tmp.write_text(json.dumps(e, ensure_ascii=False), encoding='utf-8')
-        tmp.replace(p)
+        atomic_write(self._dpath(key), json.dumps(e, ensure_ascii=False))
         return e
 
     def data_keys(self):

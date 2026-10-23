@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -378,6 +379,53 @@ class TestConsoleEncoding(AppCase):
             wj_app.notify('한글 메시지')
         finally:
             sys.stdout = real
+
+
+class TestConcurrentWrites(unittest.TestCase):
+    """같은 저장본을 여러 스레드가 동시에 갱신해도(병렬 미리 받기 + 화면 요청) 파일이 깨지거나 예외가 나지 않는지.
+    고정된 임시 파일 이름(.tmp)을 쓰던 때는 스레드끼리 같은 임시 파일을 덮어쓰다 깨지거나, 윈도우에서 PermissionError 가 났다."""
+
+    def test_many_threads_writing_the_same_key(self):
+        import threading
+        with tempfile.TemporaryDirectory() as tmp:
+            st = wj_app.State('http://x/exec', root=tmp)
+            st.session = {'token': 't', 'me': {'id': 'tw'}, 'who': 'w'}
+            errors = []
+
+            def writer(n):
+                try:
+                    for i in range(60):
+                        st.data_put('pull|TW|W40|1', {'closed': False, 'cells': {'c': {'html': 'x' * 2000, 'v': n * 1000 + i}}})
+                        e = st.data_get('pull|TW|W40|1')
+                        if e is None or 'cells' not in e:
+                            errors.append(f'unreadable after write by {n}')
+                except Exception as ex:
+                    errors.append(repr(ex))
+            th = [threading.Thread(target=writer, args=(n,)) for n in range(8)]
+            [x.start() for x in th]
+            [x.join(60) for x in th]
+            self.assertEqual(errors, [])
+            self.assertEqual(list((Path(tmp) / 'cache').glob('*.tmp')), [])      # 임시 파일이 남지 않음
+            self.assertIsNotNone(st.data_get('pull|TW|W40|1'))
+
+    def test_page_cache_put_is_also_atomic(self):
+        import threading
+        with tempfile.TemporaryDirectory() as tmp:
+            st = wj_app.State('http://x/exec', root=tmp)
+            errors = []
+
+            def writer():
+                try:
+                    for i in range(40):
+                        st.cache_put('journal_TW', {'html': '<p>' + 'y' * 5000 + '</p>', 'status': 'final', 'asOf': 'z'})
+                        if st.cache_get('journal_TW') is None:
+                            errors.append('unreadable')
+                except Exception as ex:
+                    errors.append(repr(ex))
+            th = [threading.Thread(target=writer) for _ in range(6)]
+            [x.start() for x in th]
+            [x.join(60) for x in th]
+            self.assertEqual(errors, [])
 
 
 if __name__ == '__main__':
