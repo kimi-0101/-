@@ -7,7 +7,7 @@
   python pc_server/wj_admin.py list-users
   python pc_server/wj_admin.py push-key                               ERP 숫자 반영 키를 새로 만든다 (이전 키는 무효)
   python pc_server/wj_admin.py import-backup wj_backup                backup_journal.py 가 받아 둔 날짜 폴더들을 DB 로 가져오기
-  python pc_server/wj_admin.py translate-test "안녕하세요 <b>3분기</b> 매출" --to en     Gemini 키·번역 동작 확인
+  python pc_server/wj_admin.py translate-test "안녕하세요 <b>3분기</b> 매출" --to en     번역 설정(구글 번역/Gemini) 동작 확인
   python pc_server/wj_admin.py backup --keep 30                       DB 를 <프로젝트>/wj_data/backup/YYYY-MM-DD.sqlite3 로 복사
 """
 import argparse
@@ -163,10 +163,11 @@ def main(argv=None):
             return 1 if st['bad'] else 0
         elif a.cmd == 'translate-test':
             import wj_translate
-            tr = wj_translate.GeminiTranslator.from_env()
+            tr = wj_translate.build_translator()
             if not tr:
-                print('[오류] Gemini 키가 없습니다. wj_data/gemini_key.txt 에 키를 넣거나 환경변수 GEMINI_API_KEY 를 설정하세요.')
+                print('[오류] 번역 설정이 없습니다. wj_data/translate_url.txt(구글 번역) 또는 Gemini 키를 설정하세요. README 의 "자동 번역" 참고.')
                 return 2
+            print('엔진: ' + ' → '.join(wj_translate.engine_names(tr)))
             try:
                 print(tr.translate(a.text, a.src, a.to))
             except wj_translate.TranslateError as ex:

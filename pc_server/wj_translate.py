@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
-"""영업일지 PC 서버의 자동 번역 — Code.gs 의 LanguageApp.translate 를 대신한다.
+"""영업일지 PC 서버의 자동 번역 — 지금까지 Code.gs 가 쓰던 구글 번역(LanguageApp.translate)을 그대로 쓰되, PC 서버에서 부른다.
 
-엔진은 Gemini(기존 요약기와 같은 키). 키 위치(앞에서부터):
-  환경변수 GEMINI_API_KEY → <프로젝트>/wj_data/gemini_key.txt → <프로젝트>/apps_script/weekly_journal/gemini_key.txt
-HTML 칸이므로 글자만 번역하고 태그 구조는 그대로 두게 시키며, 결과의 태그 순서가 원문과 다르면 버린다(서식이 깨진 번역을 저장하지 않기 위해).
+엔진 (앞에서부터 시도, 하나라도 되면 끝):
+ 1) 구글 번역 — 번역만 하는 작은 Apps Script(pc_server/translate_proxy.gs)를 부른다. 일지 데이터는 저장되지 않고 번역할 글만 오간다.
+    주소·열쇠: 환경변수 WJ_TRANSLATE_URL / WJ_TRANSLATE_KEY 또는 <프로젝트>/wj_data/translate_url.txt (첫 줄 주소, 둘째 줄 열쇠)
+ 2) Gemini(예비) — 구글 번역이 실패했을 때만. 키: 환경변수 GEMINI_API_KEY → <프로젝트>/wj_data/gemini_key.txt → <프로젝트>/apps_script/weekly_journal/gemini_key.txt
+    HTML 칸이라 글자만 번역하게 시키고, 결과의 태그 순서가 원문과 다르면 버린다(서식이 깨진 번역을 저장하지 않기 위해).
 """
 import json
 import os
@@ -124,3 +126,78 @@ class GeminiTranslator:
             if out and _tag_shape(out) == want:
                 return out
         raise TranslateError('번역 결과의 태그 구조가 원문과 달라 버렸습니다.')
+
+
+TRANSLATE_URL_FILE = os.path.join(ROOT, 'wj_data', 'translate_url.txt')
+GOOGLE_LANG = {'ko': 'ko', 'en': 'en', 'zh': 'zh-TW'}
+
+
+def find_google_proxy():
+    """(주소, 열쇠) — 없으면 ('', '')"""
+    url, key = os.environ.get('WJ_TRANSLATE_URL', '').strip(), os.environ.get('WJ_TRANSLATE_KEY', '').strip()
+    if not url and os.path.exists(TRANSLATE_URL_FILE):
+        with open(TRANSLATE_URL_FILE, encoding='utf-8') as f:
+            lines = [x.strip() for x in f.read().splitlines() if x.strip()]
+        url, key = (lines + ['', ''])[:2]
+    return url, key
+
+
+class GoogleTranslator:
+    """구글 번역(LanguageApp)을 부르는 Apps Script 웹앱(translate_proxy.gs)을 통해 번역한다."""
+
+    def __init__(self, url, key, post=None, timeout=60):
+        self.url, self.key, self.timeout = url, key, timeout
+        self.post = post or (lambda u, h, b, t: _http_post(u, h, b, t))
+
+    @classmethod
+    def from_env(cls, **kw):
+        url, key = find_google_proxy()
+        return cls(url, key, **kw) if url and key else None
+
+    def translate(self, html, src, dst):
+        if src not in GOOGLE_LANG or dst not in GOOGLE_LANG or src == dst:
+            raise TranslateError('언어 코드가 올바르지 않습니다.')
+        body = json.dumps({'key': self.key, 'text': html, 'src': GOOGLE_LANG[src], 'dst': GOOGLE_LANG[dst]}).encode('utf-8')
+        try:
+            res = self.post(self.url, {'Content-Type': 'text/plain;charset=utf-8'}, body, self.timeout)
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as ex:
+            raise TranslateError('구글 번역 연결 실패: %r' % (ex,))
+        if not isinstance(res, dict) or not res.get('ok'):
+            raise TranslateError('구글 번역 실패: ' + str((res or {}).get('error') if isinstance(res, dict) else res)[:200])
+        out = str(res.get('text') or '')
+        if not out.strip():
+            raise TranslateError('구글 번역 결과가 비어 있습니다.')
+        return out
+
+
+class ChainTranslator:
+    """앞 엔진이 실패하면 다음 엔진으로. 모두 실패하면 마지막 오류를 올린다."""
+
+    def __init__(self, engines):
+        self.engines = list(engines)
+
+    def translate(self, html, src, dst):
+        last = None
+        for e in self.engines:
+            try:
+                return e.translate(html, src, dst)
+            except TranslateError as ex:
+                last = ex
+        raise last or TranslateError('번역 엔진이 없습니다.')
+
+    def names(self):
+        return [{'GoogleTranslator': '구글 번역', 'GeminiTranslator': 'Gemini'}.get(type(e).__name__, type(e).__name__) for e in self.engines]
+
+
+def build_translator():
+    """설정된 엔진을 묶어 돌려준다. 하나도 없으면 None(자동 번역 꺼짐)."""
+    engines = [e for e in (GoogleTranslator.from_env(), GeminiTranslator.from_env()) if e]
+    if not engines:
+        return None
+    return engines[0] if len(engines) == 1 else ChainTranslator(engines)
+
+
+def engine_names(tr):
+    if tr is None:
+        return []
+    return tr.names() if isinstance(tr, ChainTranslator) else ChainTranslator([tr]).names()

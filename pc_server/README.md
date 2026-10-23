@@ -27,17 +27,19 @@ python pc_server\wj_server.py                                  # 서버 켜기: 
 | `backup [--keep N]` | DB 를 `wj_data/backup/YYYY-MM-DD.sqlite3` 로 복사(서버가 켜져 있어도 안전). **복원 = 서버를 끄고 그 파일을 `wj.sqlite3` 로 덮어쓰기** |
 
 ## Code.gs 와 다른 점
-- **자동 번역은 Gemini 로 한다**(구글 번역 기능 대신, `wj_translate.py`). 저장하면 나머지 두 언어 칸이 자동으로 채워지고(칸에 "Auto-translated" 표시), 사람이 직접 쓴 칸은 덮어쓰지 않는 규칙도 Code.gs 와 같다. 글자만 번역하고 HTML 태그 구조가 달라진 결과는 버린다. 번역이 실패하거나 한도에 걸려도 저장은 그대로 되고 이력(log)에만 남는다.
-  - 키: 환경변수 `GEMINI_API_KEY` 또는 `wj_data/gemini_key.txt`(기존 `apps_script\weekly_journal\gemini_key.txt` 도 읽는다). 키가 없으면 번역만 꺼진다(서버 시작 시 "자동 번역: 꺼짐" 표시).
-  - 동작 확인: `python pc_server\wj_admin.py translate-test "안녕하세요 <b>3분기</b> 매출" --to en`
-  - 무료 키는 분당 호출 한도가 작아 한꺼번에 많이 저장하면 일부 칸의 번역이 건너뛰어질 수 있다(다음에 그 칸을 저장하면 다시 번역).
+- **자동 번역은 지금과 같은 구글 번역**을 쓴다. 구글 번역은 Apps Script 안에서만 부를 수 있어서, **번역만 하는 작은 Apps Script**(`translate_proxy.gs`)를 하나 두고 PC 서버가 글자만 보내 번역본을 받는다. 일지 데이터·시트는 구글에 저장되지 않는다. 구글 번역이 실패하면 Gemini 가 예비로 받고(키가 있을 때), 둘 다 실패해도 저장은 그대로 되며 이력(log)에만 남는다.
+  - **설치(한 번, 5분)**: `translate_proxy.gs` 맨 위 주석의 1~4번을 따른다 — 새 Apps Script 프로젝트에 붙여넣기 → `setup` 실행해 열쇠 받기 → 웹 앱으로 배포(실행: 나 / 액세스: 모든 사용자) → `wj_data\translate_url.txt` 에 첫 줄 웹 앱 주소, 둘째 줄 열쇠.
+  - **동작 확인**: `python pc_server\wj_admin.py translate-test "안녕하세요 <b>3분기</b> 매출" --to en` (사용 중인 엔진 순서도 표시)
+  - 서버를 켜면 첫 줄에 `자동 번역: 켜짐 (구글 번역 → Gemini)` 처럼 보인다. 설정이 없으면 번역만 꺼진다.
+  - 저장하면 나머지 두 언어 칸이 채워지고("Auto-translated" 표시), 사람이 직접 쓴 칸은 덮어쓰지 않는 규칙은 Code.gs 와 같다.
+  - 구글 번역의 하루 사용량 한도는 지금 쓰시는 것과 같은 종류다(Apps Script 의 LanguageApp). Gemini 예비 키: 환경변수 `GEMINI_API_KEY` 또는 `wj_data\gemini_key.txt`.
 - **비밀번호는 새로 정한다**: 시트의 해시는 옮길 수 없다. 대신 PBKDF2(사용자별 소금)로 저장한다.
 - 화면(HTML)은 시트·드라이브 대신 DB 에 한 줄로 저장한다(조각 나누기 불필요).
 - 로그인 5회 실패 시 15분 잠금, 로그인 유지 1일, 칸 버전 충돌 검사, 마감, "편집 중" 표시, 입구(site)별 계정 제한은 Code.gs 와 같다.
 
 ## 시험
 ```
-python -I pc_server\tests\test_server.py      # 서버·번역·관리 도구 31개 항목 (실제 HTTP, 번역은 가짜 엔진)
+python -I pc_server\tests\test_server.py      # 서버·번역·관리 도구 36개 항목 (실제 HTTP, 번역은 가짜 엔진)
 python -I pc_server\tests\test_backup.py
 ```
 

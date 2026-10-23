@@ -415,6 +415,86 @@ class TestGeminiTranslator(unittest.TestCase):
                 os.environ['GEMINI_API_KEY'] = old
 
 
+class TestGoogleAndChain(unittest.TestCase):
+    def google(self, replies):
+        calls = []
+
+        def post(url, headers, body, timeout):
+            calls.append((url, json.loads(body)))
+            r = replies.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            return r
+        return T.GoogleTranslator('https://script.example/exec', 'SECRET', post=post), calls
+
+    def test_google_request_and_result(self):
+        g, calls = self.google([{'ok': True, 'text': '<b>Sales</b> up'}])
+        self.assertEqual(g.translate('<b>매출</b> 상승', 'ko', 'zh'), '<b>Sales</b> up')
+        url, body = calls[0]
+        self.assertEqual(url, 'https://script.example/exec')
+        self.assertEqual((body['key'], body['src'], body['dst'], body['text']), ('SECRET', 'ko', 'zh-TW', '<b>매출</b> 상승'))
+
+    def test_google_errors(self):
+        for reply in ({'ok': False, 'error': '열쇠가 맞지 않습니다.'}, {'ok': True, 'text': '  '}, 'not a dict',
+                      urllib.error.URLError('down'), TimeoutError()):
+            g, _ = self.google([reply])
+            with self.assertRaises(T.TranslateError):
+                g.translate('매출', 'ko', 'en')
+        g, _ = self.google([])
+        with self.assertRaises(T.TranslateError):
+            g.translate('x', 'ko', 'ko')
+
+    def test_chain_falls_back_to_gemini(self):
+        g, _ = self.google([urllib.error.URLError('down')])
+        gem = type('G', (), {'translate': lambda self, h, s, d: 'from gemini'})()
+        gem.__class__.__name__ = 'GeminiTranslator'
+        chain = T.ChainTranslator([g, gem])
+        self.assertEqual(chain.translate('매출', 'ko', 'en'), 'from gemini')
+        g2, _ = self.google([{'ok': True, 'text': 'from google'}])
+        self.assertEqual(T.ChainTranslator([g2, gem]).translate('매출', 'ko', 'en'), 'from google')
+        g3, _ = self.google([urllib.error.URLError('down')])
+        bad = type('B', (), {'translate': lambda self, h, s, d: (_ for _ in ()).throw(T.TranslateError('gemini 한도'))})()
+        with self.assertRaises(T.TranslateError) as cm:
+            T.ChainTranslator([g3, bad]).translate('매출', 'ko', 'en')
+        self.assertIn('gemini 한도', str(cm.exception))
+
+    def test_build_translator_from_env(self):
+        keys = ('WJ_TRANSLATE_URL', 'WJ_TRANSLATE_KEY', 'GEMINI_API_KEY')
+        old = {k: os.environ.pop(k, None) for k in keys}
+        old_files, old_gem = T.TRANSLATE_URL_FILE, T.KEY_FILES
+        T.TRANSLATE_URL_FILE, T.KEY_FILES = '/nonexistent/u.txt', ('/nonexistent/g.txt',)
+        try:
+            self.assertIsNone(T.build_translator())
+            self.assertEqual(T.engine_names(None), [])
+            os.environ['GEMINI_API_KEY'] = 'g'
+            self.assertEqual(T.engine_names(T.build_translator()), ['Gemini'])
+            os.environ['WJ_TRANSLATE_URL'], os.environ['WJ_TRANSLATE_KEY'] = 'https://x/exec', 'k'
+            self.assertEqual(T.engine_names(T.build_translator()), ['구글 번역', 'Gemini'])
+            del os.environ['GEMINI_API_KEY']
+            self.assertEqual(T.engine_names(T.build_translator()), ['구글 번역'])
+        finally:
+            for k in keys:
+                os.environ.pop(k, None)
+                if old[k] is not None:
+                    os.environ[k] = old[k]
+            T.TRANSLATE_URL_FILE, T.KEY_FILES = old_files, old_gem
+
+    def test_url_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            f = os.path.join(tmp, 'translate_url.txt')
+            with open(f, 'w', encoding='utf-8') as fh:
+                fh.write('https://x/exec\nKEY123\n')
+            old, T.TRANSLATE_URL_FILE = T.TRANSLATE_URL_FILE, f
+            saved = {k: os.environ.pop(k, None) for k in ('WJ_TRANSLATE_URL', 'WJ_TRANSLATE_KEY')}
+            try:
+                self.assertEqual(T.find_google_proxy(), ('https://x/exec', 'KEY123'))
+            finally:
+                T.TRANSLATE_URL_FILE = old
+                for k, v in saved.items():
+                    if v is not None:
+                        os.environ[k] = v
+
+
 class TestAdmin(unittest.TestCase):
     def test_import_backup_and_db_backup(self):
         with tempfile.TemporaryDirectory() as tmp:

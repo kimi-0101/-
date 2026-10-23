@@ -10,7 +10,7 @@ Code.gs 와 같은 요청·응답 형식을 쓰므로, 앱·반영 프로그램�
 계정·비밀번호·반영 키·백업: python pc_server/wj_admin.py --help
 
 Code.gs 와 다른 점
-- 자동 번역은 구글 번역(LanguageApp) 대신 Gemini 로 한다(wj_translate.py). 키가 없으면 번역만 꺼지고 나머지는 그대로 동작한다.
+- 자동 번역은 지금과 같은 구글 번역을 번역 전용 Apps Script(translate_proxy.gs)로 부르고, 실패하면 Gemini 가 예비로 받는다(wj_translate.py). 설정이 없으면 번역만 꺼지고 나머지는 그대로 동작한다.
 - 비밀번호는 PBKDF2(사용자별 소금)로 저장한다. 시트의 해시는 옮길 수 없으니 계정마다 비밀번호를 새로 정한다.
 """
 import argparse
@@ -664,12 +664,13 @@ def main(argv=None):
     a = ap.parse_args(argv)
     sys.path.insert(0, HERE)
     import wj_translate
-    tr = wj_translate.GeminiTranslator.from_env()
+    tr = wj_translate.build_translator()
     store = Store(a.db, translator=tr)
     store.init_defaults()
     srv = make_server(store, a.host, a.port)
     print('영업일지 PC 서버: http://%s:%d/  (DB: %s)  끝내려면 Ctrl+C' % (a.host, a.port, a.db))
-    print('자동 번역: ' + ('켜짐 (Gemini)' if tr else '꺼짐 — Gemini 키가 없습니다(wj_data/gemini_key.txt 또는 환경변수 GEMINI_API_KEY)'))
+    names = wj_translate.engine_names(tr)
+    print('자동 번역: ' + (('켜짐 (' + ' → '.join(names) + ')') if names else '꺼짐 — 번역 설정이 없습니다(README 의 "자동 번역" 참고)'))
     if not store.cfg('PUSH_KEY'):
         print('[안내] 반영 키가 아직 없습니다: python pc_server/wj_admin.py push-key')
     try:
