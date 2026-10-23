@@ -21,6 +21,7 @@ def main(argv=None):
     ap.add_argument('--id', required=True)
     ap.add_argument('--password', required=True)
     ap.add_argument('--weeks', nargs='*')
+    ap.add_argument('--like-bench', action='store_true', help='bench.py 처럼 화면 7개를 먼저 받은 다음에 재본다 (뒤에서 도는 미리 받기와 겹치는지 확인)')
     a = ap.parse_args(argv)
     for s in (sys.stdout, sys.stderr):
         try:
@@ -29,7 +30,12 @@ def main(argv=None):
             pass
     url = wj_app.load_api_url(a.api_url)
     st = wj_app.State(url, root=tempfile.mkdtemp(prefix='wjdiag_'))
-    wj_app.log = lambda st_, msg: None
+    t_start = time.perf_counter()
+
+    def show(st_, msg):
+        if a.like_bench and (msg.startswith('[글]') or msg.startswith('[서버]')):
+            print(f'    +{time.perf_counter() - t_start:6.1f}s {msg[:110]}')
+    wj_app.log = show
     r = wj_app.upstream(st, {'a': 'login', 'id': a.id, 'password': a.password, 'who': 'diag'}, retries=0)
     if not r.get('ok'):
         print('[중단] 로그인 실패:', r.get('error'))
@@ -39,6 +45,13 @@ def main(argv=None):
     ent = me.get('ent') if me.get('ent') in ('HK', 'TW') else 'TW'
     weeks = a.weeks or bench.week_codes()
     print(f'로그인 me={ {k: me.get(k) for k in ("id", "ent", "role")} }  법인={ent}  주={weeks}')
+    if a.like_bench:
+        first = wj_app.default_page(st)
+        names = [first] + [f'{k}_{ent}' for k in wj_app.PREFETCH if f'{k}_{ent}' != first]
+        print('\n화면 받는 중 (bench.py 와 같은 순서)…')
+        for n in names:
+            wj_app.fetch_page(st, n)
+        print('화면 받기 끝')
     for photos in (True, False):
         print(f'\n--- photos={photos} ---')
         body = {'a': 'pullMany', 'ent': ent, 'weeks': weeks, 'photos': photos}
