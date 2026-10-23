@@ -70,7 +70,12 @@ def run(api_url, uid, pw, who, say=print, weeks=None, silent_log=True):
     c, r1 = timed(lambda: wj_app.handle_pull(st, dict(body)))
     w, r2 = timed(lambda: wj_app.handle_pull(st, dict(body)))
     ok = isinstance(r1, dict) and r1.get('ok')
-    add(f'일지 글·사진 {len(wk)}주 ({ent})', c, w, '' if ok else '받지 못함: ' + str((r1 or {}).get('error')))
+    note = '' if ok else '받지 못함: ' + str((r1 or {}).get('error'))
+    if ok:
+        bad = [(code, x.get('error')) for code, x in zip(wk, r1.get('results') or []) if not x.get('ok')]
+        if bad:                                                     # 실패한 주는 저장본에 남지 않아 매번 서버로 가므로 '저장본' 칸이 빨라지지 않는다
+            note = '서버가 거절한 주: ' + ', '.join(f'{code}({str(err)[:30]})' for code, err in bad) + ' → 이 주들은 저장본이 안 생김'
+    add(f'일지 글·사진 {len(wk)}주 ({ent})', c, w, note)
 
     c, _ = timed(lambda: wj_app.handle_archive(st, {}))
     w, _ = timed(lambda: wj_app.handle_archive(st, {}))
