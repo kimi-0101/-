@@ -120,10 +120,15 @@ jobs:
           $name = [string]::Concat([char]0xC601, [char]0xC5C5, [char]0xC77C, [char]0xC9C0, '.lnk')
           foreach ($d in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('Startup'))) {
             $l = Join-Path $d $name
-            if (-not (Test-Path $l)) { throw "shortcut missing: $l" }
-            $s = (New-Object -ComObject WScript.Shell).CreateShortcut($l)
-            Write-Host "shortcut $l -> $($s.TargetPath) $($s.Arguments)"
-            if (-not (Test-Path $s.TargetPath)) { throw "shortcut target missing: $($s.TargetPath)" }
+            # NOTE: do NOT reopen the shortcut with WScript.Shell using a Hangul path (non-Korean locales return an empty object).
+            # Verify with plain .NET file APIs instead: the file exists, is non-empty, and its bytes contain the target (pythonw.exe).
+            if (-not [System.IO.File]::Exists($l)) { throw "shortcut missing: $l" }
+            $b = [System.IO.File]::ReadAllBytes($l)
+            if ($b.Length -lt 100) { throw "shortcut file too small ($($b.Length) bytes): $l" }
+            $ascii = [System.Text.Encoding]::ASCII.GetString($b)
+            $utf16 = [System.Text.Encoding]::Unicode.GetString($b)
+            if (($ascii -notmatch 'pythonw\.exe') -and ($utf16 -notmatch 'pythonw\.exe')) { throw "shortcut does not point to pythonw.exe: $l" }
+            Write-Host "shortcut OK ($($b.Length) bytes, points to pythonw.exe): $l"
           }
           $bytes = [System.IO.File]::ReadAllBytes((Join-Path $app 'api_url.txt'))
           if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) { throw 'api_url.txt has a BOM (the app would misread the URL)' }
