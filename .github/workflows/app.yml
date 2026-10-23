@@ -1,0 +1,51 @@
+name: app-tests-and-exe
+
+# 푸시할 때마다 서버·앱 시험을 돌리고, 윈도우용 WJApp.exe(파이썬 없이 실행)를 만들어 아티팩트로 올린다.
+# 태그(app-v0.4.0 처럼)를 붙여 푸시하면 같은 파일을 릴리스에도 올린다.
+on:
+  push:
+    branches: ['**']
+    tags: ['app-v*']
+    paths: ['desktop_app/**', 'pc_server/**', '.github/workflows/app.yml']
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: PC 서버 시험
+        run: |
+          python -I pc_server/tests/test_server.py
+          python -I pc_server/tests/test_restore.py
+          python -I pc_server/tests/test_backup.py
+      - name: 앱 시험 (가짜 서버)
+        run: |
+          python -I desktop_app/tests/test_data_cache.py
+          python -I desktop_app/tests/test_bench.py
+
+  build-exe:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 빌드
+        working-directory: desktop_app
+        run: |
+          python -m pip install -r requirements.txt pyinstaller
+          pyinstaller --noconfirm --onefile --windowed --name WJApp --icon wj_app.ico wj_app.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WJApp-windows
+          path: desktop_app/dist/WJApp.exe
+      - name: 릴리스에 올리기 (태그일 때만)
+        if: startsWith(github.ref, 'refs/tags/app-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: desktop_app/dist/WJApp.exe

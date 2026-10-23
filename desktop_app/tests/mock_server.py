@@ -24,6 +24,7 @@ class Mock:
         self.pages = {}
         self.journal = {}        # 칸ID → {html, version, by, at}  (일지 글 흉내)
         self.closed = set()      # (법인, 주) 마감
+        self.page_delay = 0      # 화면(page) 응답을 이만큼(초) 늦춘다
         self.delay = 0           # pull 계열 응답을 이만큼(초) 늦춘다 (구글이 느린 상황 흉내)
         self.pulls = []          # pull/pullMany 로 요청된 (법인, [주], photos)
 
@@ -76,6 +77,8 @@ def start(mock):
             if tok != REAL_TOKEN or mock.expire:
                 return self._out(200, json.dumps({'ok': False, 'auth': True, 'error': '다시 로그인하세요.'}))
             if a == 'page':
+                if mock.page_delay:
+                    time.sleep(mock.page_delay)
                 mock.pagenames.append(req['name'])
                 return self._out(200, json.dumps({'ok': True, 'html': mock.page_html(req['name']), 'status': 'final', 'asOf': '2026-10-16 10:00'}))
             if a in ('pull', 'pullMany', 'archive') and mock.delay:

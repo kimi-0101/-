@@ -238,7 +238,7 @@ class TestArchiveAndPrefetch(AppCase):
                                           + 'x' * 50 + '</body></html>')
         r = self.api('/api', {'a': 'page', 'name': 'summary_TW'})
         self.assertTrue(r['ok'])
-        self.assertTrue(wait(lambda: ('TW', ['W40'], True) in self.mock.pulls))
+        self.assertTrue(wait(lambda: self.st.data_get('pull|TW|W40|1') is not None))      # 요청이 도착한 뒤 저장본이 기록될 때까지
         n = len(self.mock.pulls)
         got = self.pull()                                              # 화면이 열릴 때 보내는 요청(photos:true)
         self.assertTrue(got['cached'])
@@ -264,6 +264,94 @@ class TestArchiveAndPrefetch(AppCase):
         self.assertTrue(list((self.st.root / 'cache').glob('data_*.json')))
         self.st.cache_clear()
         self.assertFalse(list((self.st.root / 'cache').glob('data_*.json')))
+
+
+class TestParallelPrefetch(AppCase):
+    def test_prefetch_gets_all_pages_in_parallel(self):
+        self.mock.page_delay = 0.4
+        names = [f'{k}_TW' for k in wj_app.PREFETCH]
+        t0 = time.time()
+        self._prefetch(self.st, delay=0)
+        self.assertTrue(wait(lambda: all(self.st.cache_get(n) for n in names if n != 'journal_TW'), 6))
+        took = time.time() - t0
+        sequential = 0.4 * (len(names) - 1)
+        self.assertLess(took, sequential * 0.7)                         # 하나씩 받을 때(2.4초)보다 확실히 빠름
+        self.assertEqual(len(names) - 1, len(set(self.mock.pagenames)))
+
+    def test_prefetch_also_refreshes_cached_data(self):
+        self.pull()
+        self.mock.journal[CELL] = {'html': '미리 받은 새 글', 'version': 3, 'by': 'x', 'at': 'y'}
+        self._prefetch(self.st, delay=0)
+        self.assertTrue(wait(lambda: self.st.data_get('pull|TW|W40|1')['cells'][CELL]['html'] == '미리 받은 새 글', 6))
+
+
+class TestAutoLogin(AppCase):
+    def setUp(self):
+        super().setUp()
+        self._p, self._u = wj_app.protect_bytes, wj_app.unprotect_bytes
+        wj_app.protect_bytes = lambda b: b'ENC:' + bytes(x ^ 0x5A for x in b)       # 윈도우 암호화(DPAPI) 흉내: 되돌릴 수 있는 가짜
+        wj_app.unprotect_bytes = lambda b: bytes(x ^ 0x5A for x in b[4:]) if b.startswith(b'ENC:') else None
+
+    def tearDown(self):
+        wj_app.protect_bytes, wj_app.unprotect_bytes = self._p, self._u
+        super().tearDown()
+
+    def get_root(self):
+        c = http.client.HTTPConnection('127.0.0.1', self.st.port, timeout=20)
+        c.request('GET', '/', headers={'Cookie': 'wjk=' + self.st.key})
+        r = c.getresponse()
+        body = r.read().decode('utf-8')
+        c.close()
+        return r.status, body
+
+    def login(self, remember):
+        return self.api('/app/login', {'id': 'tw', 'password': 'pw12345678', 'who': 't', 'remember': remember})
+
+    def test_remember_then_silent_login(self):
+        self.login(True)
+        raw = (self.st.root / 'cred.bin').read_bytes()
+        self.assertNotIn(b'pw12345678', raw)                              # 파일에 비밀번호가 그대로 있지 않음
+        self.st.clear_session()                                         # 다음 날 앱을 켠 상황
+        n = self.mock.count('login')
+        status, body = self.get_root()
+        self.assertEqual(status, 200)
+        self.assertNotIn('<form id="f">', body)                         # 로그인 화면이 아니라 일지 화면
+        self.assertEqual(self.mock.count('login'), n + 1)
+        self.assertIsNotNone(self.st.session)
+
+    def test_not_remembered_by_default(self):
+        self.login(False)
+        self.assertFalse((self.st.root / 'cred.bin').exists())
+        self.st.clear_session()
+        status, body = self.get_root()
+        self.assertIn('<form id="f">', body)
+        self.assertIn('id="rm"', body)                                  # 자동 로그인 선택 칸이 보임
+
+    def test_wrong_saved_password_is_forgotten(self):
+        self.st.save_cred('tw', 'changed-password', 't')
+        self.st.clear_session()
+        status, body = self.get_root()
+        self.assertIn('<form id="f">', body)
+        self.assertFalse((self.st.root / 'cred.bin').exists())
+
+    def test_offline_keeps_saved_login(self):
+        self.login(True)
+        self.st.clear_session()
+        self.mock.offline = True
+        status, body = self.get_root()
+        self.assertIn('<form id="f">', body)
+        self.assertTrue((self.st.root / 'cred.bin').exists())           # 인터넷 문제로는 지우지 않음
+
+    def test_logout_forgets(self):
+        self.login(True)
+        self.api('/api', {'a': 'logout'})
+        self.assertFalse((self.st.root / 'cred.bin').exists())
+
+    def test_no_checkbox_when_encryption_unavailable(self):
+        wj_app.protect_bytes = lambda b: None
+        self.st.clear_session()
+        status, body = self.get_root()
+        self.assertNotIn('id="rm"', body)
 
 
 if __name__ == '__main__':

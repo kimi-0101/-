@@ -37,9 +37,23 @@ python pc_server\wj_server.py                                  # 서버 켜기: 
 - 화면(HTML)은 시트·드라이브 대신 DB 에 한 줄로 저장한다(조각 나누기 불필요).
 - 로그인 5회 실패 시 15분 잠금, 로그인 유지 1일, 칸 버전 충돌 검사, 마감, "편집 중" 표시, 입구(site)별 계정 제한은 Code.gs 와 같다.
 
+## 백업 복원·검증 `restore_journal.py` (구글 서버·PC 서버 모두)
+
+```
+python pc_server\restore_journal.py --api-url <서버 주소> --id hq --verify      # 백업과 서버를 대조만 한다 (아무것도 바꾸지 않음)
+python pc_server\restore_journal.py --api-url <서버 주소> --id hq --dry-run     # 무엇을 되돌릴지 보기만
+python pc_server\restore_journal.py --api-url <서버 주소> --id hq               # 서버에 없거나 비어 있는 칸만 채움 (안전, 기본)
+python pc_server\restore_journal.py --api-url <서버 주소> --id hq --mode overwrite   # 내용이 다른 칸도 백업 내용으로 (새 버전으로 기록되어 이력이 남음)
+```
+- 옵션: `--day 2026-10-21`(기본 가장 최근 백업) `--ent TW` `--codes W41 M09` `--include-auto`(자동번역 칸도).
+- **본사(hq) 계정**으로 실행해야 모든 칸·마감된 주도 되돌릴 수 있다. 자동번역 칸은 사람이 쓴 것으로 바뀌지 않게 기본으로 건너뛴다. 그 사이 서버에서 바뀐 칸은 덮어쓰지 않고 '충돌'로 센다. 같은 명령을 다시 실행해도 결과가 같다.
+- 정기 백업을 **매일**로 바꾸려면: `powershell -ExecutionPolicy Bypass -File pc_server\register_backup_task.ps1 -Daily -Time 02:00 -Keep 60`
+- 권장 점검: 한 주에 한 번 `--verify` 로 최근 백업이 서버와 일치하는지 확인(차이가 나오면 종료코드 1).
+
 ## 시험
 ```
 python -I pc_server\tests\test_server.py      # 서버·번역·관리 도구 36개 항목 (실제 HTTP, 번역은 가짜 엔진)
+python -I pc_server\tests\test_restore.py     # 복원·검증 10개 항목 (실제 HTTP)
 python -I pc_server\tests\test_backup.py
 ```
 
@@ -58,7 +72,7 @@ python pc_server\backup_journal.py --out D:\wj_backup --keep 60
 - 글이 있는 코드(W1~W53, M01~M12)만 저장합니다. 같은 날 다시 실행하면 이미 받은 파일은 건너뛰고 이어서 받습니다.
 - 로그인은 요약 반영과 같은 계정(`apps_script\weekly_journal\summarizer_login.txt`, `api_url.txt`)을 씁니다.
 - 종료코드 0 성공 / 1 일부 실패 / 2 로그인·설정 오류.
-- **복원 도구는 아직 없습니다.** 저장 형식은 시트의 칸 ID·html·version·작성자·시각 그대로라서 다음 단계에서 복원 스크립트를 만듭니다.
+- 복원·검증은 아래 `restore_journal.py` 를 쓴다. 저장 형식은 시트의 칸 ID·html·version·작성자·시각 그대로다.
 
 ## 매주 화요일 자동 실행 (윈도우 작업 스케줄러)
 

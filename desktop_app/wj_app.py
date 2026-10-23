@@ -27,9 +27,10 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-APP_VERSION = '0.3.0'
+APP_VERSION = '0.4.0'
 APP_TITLE = '주간영업일지'
 SESSION_HOURS = 24            # 서버의 로그인 유지(1일)와 맞춤
 PAGE_TTL = 3 * 24 * 3600      # 저장해 둔 화면을 이 기간까지는 '먼저 바로' 열어 준다 (숫자는 화면 위의 '데이터 기준'에 표시됨)
@@ -50,6 +51,34 @@ def data_dir():
     d = Path(base) / 'WJApp'
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _dpapi(data, protect):
+    """윈도우 사용자 계정으로 암호화/복호화(DPAPI). 윈도우가 아니면 None 을 돌려준다(= 자동 로그인 사용 불가)."""
+    if sys.platform != 'win32':
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    class BLOB(ctypes.Structure):
+        _fields_ = [('cbData', wintypes.DWORD), ('pbData', ctypes.POINTER(ctypes.c_char))]
+    buf = ctypes.create_string_buffer(data, len(data))
+    inp, out = BLOB(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char))), BLOB()
+    fn = ctypes.windll.crypt32.CryptProtectData if protect else ctypes.windll.crypt32.CryptUnprotectData
+    if not fn(ctypes.byref(inp), None, None, None, None, 0, ctypes.byref(out)):
+        return None
+    try:
+        return ctypes.string_at(out.pbData, out.cbData)
+    finally:
+        ctypes.windll.kernel32.LocalFree(out.pbData)
+
+
+def protect_bytes(b):
+    return _dpapi(b, True)
+
+
+def unprotect_bytes(b):
+    return _dpapi(b, False)
 
 
 class UpstreamError(Exception):
@@ -108,6 +137,34 @@ class State:
         (self.root / 'session.json').write_text(json.dumps(self.session, ensure_ascii=False), encoding='utf-8')
         try:
             os.chmod(self.root / 'session.json', 0o600)
+        except OSError:
+            pass
+
+    # ---- 자동 로그인 (선택): 아이디·비밀번호를 이 윈도우 계정으로만 풀 수 있게 암호화해 저장 ----
+    def can_remember(self):
+        return protect_bytes(b'x') is not None
+
+    def save_cred(self, uid, pw, who):
+        blob = protect_bytes(json.dumps({'id': uid, 'password': pw, 'who': who}, ensure_ascii=False).encode('utf-8'))
+        if blob is None:
+            return False
+        (self.root / 'cred.bin').write_bytes(blob)
+        try:
+            os.chmod(self.root / 'cred.bin', 0o600)
+        except OSError:
+            pass
+        return True
+
+    def load_cred(self):
+        try:
+            raw = unprotect_bytes((self.root / 'cred.bin').read_bytes())
+            return json.loads(raw.decode('utf-8')) if raw else None
+        except Exception:
+            return None
+
+    def forget_cred(self):
+        try:
+            (self.root / 'cred.bin').unlink()
         except OSError:
             pass
 
@@ -267,31 +324,38 @@ def refresh_later(st, name):
     threading.Thread(target=run, daemon=True).start()
 
 
-def prefetch(st, delay=3.0):
-    """뒤에서 자주 여는 화면을 미리 받아 둔다 (첫 화면을 여는 동안은 방해하지 않도록 잠깐 뒤에 시작)."""
+def prefetch(st, delay=3.0, workers=3):
+    """뒤에서 자주 여는 화면과 글 데이터를 미리 받아 둔다 (첫 화면을 여는 동안은 방해하지 않도록 잠깐 뒤에 시작).
+    화면은 workers 개씩 동시에 받는다 — 하나씩 받으면 처음 설치한 날·로그인 직후에 모두 받아지기까지 오래 걸린다."""
     me = (st.session or {}).get('me') or {}
     ents = ['HK', 'TW'] if me.get('ent') in ('ALL', '', None) else [me['ent']]
     first = default_page(st)
 
-    def run():
+    def pages():
         time.sleep(delay)
-        try:
-            refresh_all_data(st)                                       # 지난번에 쓴 글 데이터를 먼저 새로 받아 둔다 (가장 자주 열리는 것)
-        except Exception:
-            pass
         names = [f'{k}_{e}' for e in ents for k in PREFETCH]
-        for n in names:
+
+        def one(n):
             if n == first or not st.session:
-                continue
+                return
             c = st.cache_get(n)
             if c and time.time() - c['at'] < REFRESH_AFTER:
-                continue
+                return
             try:
                 load_now(st, n)
             except Exception:
                 pass
-            time.sleep(0.5)
-    threading.Thread(target=run, daemon=True).start()
+        with ThreadPoolExecutor(workers) as ex:
+            list(ex.map(one, names))
+
+    def data():
+        time.sleep(delay)
+        try:
+            refresh_all_data(st)                                       # 지난번에 쓴 글 데이터를 새로 받아 둔다 (화면 받기와 동시에)
+        except Exception:
+            pass
+    threading.Thread(target=pages, daemon=True).start()
+    threading.Thread(target=data, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -518,6 +582,23 @@ def log_write(st, body, r, failed=False):
                  'a': a, 'items': rec_items, 'results': results})
 
 
+def auto_login(st):
+    """저장해 둔 아이디·비밀번호로 조용히 로그인한다. 비밀번호가 바뀌어 거절당하면 저장본을 지우고 로그인 화면으로 보낸다."""
+    c = st.load_cred()
+    if not c:
+        return False
+    try:
+        r = upstream(st, {'a': 'login', 'id': c.get('id', ''), 'password': c.get('password', ''), 'who': c.get('who', '')}, retries=1)
+    except UpstreamError:
+        return False                                                  # 인터넷 문제면 저장해 둔 정보는 그대로 두고 로그인 화면을 보여 준다
+    if r.get('ok'):
+        st.set_session(r['token'], r.get('me') or {}, str(c.get('who', ''))[:30])
+        prefetch(st, delay=0.3)
+        return True
+    st.forget_cred()
+    return False
+
+
 def default_page(st):
     me = (st.session or {}).get('me') or {}
     ent = me.get('ent') if me.get('ent') in ('HK', 'TW') else 'TW'
@@ -553,13 +634,13 @@ h3{margin:0}input{font:inherit;padding:9px 10px;border:1px solid #d1d5db;border-
 button{font:inherit;padding:9px;border:0;border-radius:8px;background:#111;color:#fff;cursor:pointer}#m{color:#b45309;font-size:12px;min-height:16px}small{color:#6b7280}</style></head><body>
 <form id="f"><h3>Weekly Sales Journal</h3><small>앱 v__VER__</small>
 <input id="i" placeholder="ID" autocomplete="username"><input id="w" type="password" placeholder="Password" autocomplete="current-password">
-<input id="n" placeholder="이름 (화면에 표시)" maxlength="30"><button type="submit" id="b">로그인</button><div id="m"></div></form>
+<input id="n" placeholder="이름 (화면에 표시)" maxlength="30">__REM__<button type="submit" id="b">로그인</button><div id="m"></div></form>
 <script>var n=document.getElementById('n');try{n.value=localStorage.getItem('wj_name')||''}catch(e){}
 document.getElementById('f').addEventListener('submit',function(ev){ev.preventDefault();
 var id=i.value.trim(),pw=w.value,who=n.value.trim(),m=document.getElementById('m');
 if(!id||!pw||!who){m.textContent='아이디, 비밀번호, 이름을 입력하세요.';return;}
 b.disabled=true;m.textContent='로그인 중…';
-fetch('/app/login',{method:'POST',body:JSON.stringify({id:id,password:pw,who:who})}).then(function(r){return r.json()}).then(function(r){
+var rm=document.getElementById('rm');fetch('/app/login',{method:'POST',body:JSON.stringify({id:id,password:pw,who:who,remember:!!(rm&&rm.checked)})}).then(function(r){return r.json()}).then(function(r){
  if(r.ok){try{localStorage.setItem('wj_name',who)}catch(e){}location.href='/';}else{m.textContent=r.error||'로그인 실패';b.disabled=false;}
 }).catch(function(){m.textContent='앱 내부 오류';b.disabled=false;});});</script></body></html>"""
 
@@ -607,8 +688,12 @@ def make_handler(st):
                 return self._send(204)
             if not self._guard():
                 return
+            if path != '/login' and not st.session and auto_login(st):    # 저장해 둔 로그인 정보가 있으면 입력 없이 들어간다
+                pass
             if path == '/login' or not st.session:
-                return self._send(200, LOGIN_HTML.replace('__VER__', APP_VERSION))
+                rem = ('<label style="font-size:12px;color:#4b5563"><input type="checkbox" id="rm"> 이 PC 에서 자동 로그인 (암호화해 저장)</label>'
+                       if st.can_remember() else '')
+                return self._send(200, LOGIN_HTML.replace('__VER__', APP_VERSION).replace('__REM__', rem))
             if path == '/':
                 m = re.search(r'(?:^|&)p=([^&]+)', qs)
                 name = m.group(1) if m and PAGE_RE.match(m.group(1)) else default_page(st)
@@ -642,7 +727,11 @@ def make_handler(st):
                     return self._json({'ok': False, 'error': '서버에 연결하지 못했습니다.'})
                 if r.get('ok'):
                     st.set_session(r['token'], r.get('me') or {}, str(body.get('who', ''))[:30])
-                    prefetch(st)
+                    if body.get('remember'):
+                        st.save_cred(str(body.get('id', '')), str(body.get('password', '')), str(body.get('who', ''))[:30])
+                    else:
+                        st.forget_cred()
+                    prefetch(st, delay=0.3)
                     return self._json({'ok': True})
                 return self._json({'ok': False, 'error': r.get('error', '로그인 실패')})
             if path == '/app/refresh':                            # '최신 데이터 받기' 버튼: 그 화면을 서버에서 새로 받아 저장
@@ -676,6 +765,7 @@ def make_handler(st):
                 except UpstreamError:
                     pass
                 st.clear_session()
+                st.forget_cred()                                       # 로그아웃하면 자동 로그인 정보도 지운다
                 return self._json({'ok': True})
             if a in ('pull', 'pullMany'):                          # 글 데이터: 저장본이 있으면 바로 답한다
                 r = handle_pull(st, body)
@@ -764,6 +854,7 @@ def main(argv=None):
     st = State(url)
     if a.reset:
         st.clear_session()
+        st.forget_cred()
         st.cache_clear()
     mv = os.environ.get('WJ_MIN_VERSION_URL')
     if mv:
