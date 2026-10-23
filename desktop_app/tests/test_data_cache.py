@@ -166,9 +166,9 @@ class TestPull(AppCase):
 class TestWrites(AppCase):
     def test_save_updates_cache_without_refetch(self):
         self.pull()
+        n = self.mock.count('pullMany')                                  # 저장 '전' 기준 (뒤에서 새로 받기가 저장 응답보다 먼저 나갈 수 있어서)
         r = self.api('/api', {'a': 'save', 'cellId': CELL, 'html': '내가 고침', 'base': 1})
         self.assertEqual((r['ok'], r['version']), (True, 2))
-        n = self.mock.count('pullMany')
         got = self.pull()
         c = got['cells'][CELL]
         self.assertEqual((c['html'], c['version'], c['by']), ('내가 고침', 2, 'tw (t)'))
