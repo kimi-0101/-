@@ -25,12 +25,14 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 APP_VERSION = '0.4.0'
+LOG_MAX = 2 * 1024 * 1024     # app.log 가 이보다 커지면 app.log.1 로 넘기고 새로 쓴다
 APP_TITLE = '주간영업일지'
 SESSION_HOURS = 24            # 서버의 로그인 유지(1일)와 맞춤
 PAGE_TTL = 3 * 24 * 3600      # 저장해 둔 화면을 이 기간까지는 '먼저 바로' 열어 준다 (숫자는 화면 위의 '데이터 기준'에 표시됨)
@@ -143,7 +145,10 @@ def log(st, msg):
         except Exception:
             pass
     try:
-        with open(st.root / 'app.log', 'a', encoding='utf-8') as f:
+        lp = st.root / 'app.log'
+        if lp.exists() and lp.stat().st_size > LOG_MAX:               # 몇 주 쓰면 끝없이 커지지 않게 한 번 넘기면 이전 것으로 돌린다
+            os.replace(lp, st.root / 'app.log.1')
+        with open(lp, 'a', encoding='utf-8') as f:
             f.write(line + '\n')
     except OSError:
         pass
@@ -878,6 +883,85 @@ def load_api_url(cli):
     return ''
 
 
+_LOG_LINE = re.compile(r'^\d\d:\d\d:\d\d \[(서버|화면|글)\] (\S+)\s.*?([\d.]+)초')
+_URL_ID = re.compile(r'macros/s/[A-Za-z0-9_-]+')
+
+
+def collect_diag(root=None):
+    """시범 운영 중 문제가 생겼을 때 보내는 점검 내용을 글자로 모은다. 비밀번호·로그인 열쇠·서버 주소 전체는 넣지 않는다."""
+    import platform
+    import statistics
+    root = Path(root) if root else data_dir()
+    out = []
+
+    def add(s=''):
+        out.append(_URL_ID.sub('macros/s/…', str(s)))
+    add(f"영업일지 앱 점검 {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    add(f'앱 버전: {APP_VERSION}')
+    add(f'운영체제: {platform.platform()}')
+    add(f"파이썬: {sys.version.split()[0]}  ({sys.executable})")
+    try:
+        from importlib.metadata import version
+        add('pywebview: ' + version('pywebview'))
+    except Exception:
+        add('pywebview: 설치되어 있지 않음(앱 창 대신 브라우저로 열림)')
+    if sys.platform == 'win32':
+        wv = ''
+        try:
+            import winreg
+            guid = r'Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+            for hive, sub in ((winreg.HKEY_LOCAL_MACHINE, 'SOFTWARE\\WOW6432Node\\' + guid), (winreg.HKEY_CURRENT_USER, 'Software\\' + guid)):
+                try:
+                    with winreg.OpenKey(hive, sub) as k:
+                        wv = winreg.QueryValueEx(k, 'pv')[0]
+                        break
+                except OSError:
+                    continue
+        except Exception:
+            pass
+        add('WebView2(앱 창에 필요): ' + (wv or '찾지 못함'))
+    url = load_api_url(None)
+    add('서버: ' + (urllib.parse.urlparse(url).netloc + ' (주소 설정됨)' if url else '주소 없음'))
+    add(f'데이터 폴더: {root}')
+    try:
+        s = json.loads((root / 'session.json').read_text(encoding='utf-8'))
+        age = (time.time() - s.get('at', 0)) / 3600
+        add(f"로그인: {(s.get('me') or {}).get('id', '?')}  ({age:.1f}시간 전)")
+    except Exception:
+        add('로그인: 저장된 로그인 없음')
+    add('자동 로그인: ' + ('켜짐' if (root / 'cred.bin').exists() else '꺼짐'))
+    cd = root / 'cache'
+    files = [f for f in cd.iterdir() if f.is_file()] if cd.is_dir() else []
+    add(f"저장본: {len(files)}개, {sum(f.stat().st_size for f in files) / 1048576:.1f}MB")
+    lp = root / 'app.log'
+    try:
+        lines = lp.read_text(encoding='utf-8', errors='replace').splitlines()
+    except OSError:
+        lines = []
+    add(f'app.log: {len(lines)}줄' + (f", {lp.stat().st_size // 1024}KB" if lines else ' (없음)'))
+    groups = {}
+    for ln in lines:
+        m = _LOG_LINE.match(ln)
+        if m:
+            kind, act, sec = m.group(1), m.group(2), float(m.group(3))
+            k = '화면:' + ('저장본' if '저장본' in ln else '서버') if kind == '화면' else ('글:저장본포함' if kind == '글' else '서버:' + act + ('(실패)' if '실패' in ln else ''))
+            groups.setdefault(k, []).append(sec)
+    if groups:
+        add('')
+        add('동작별 시간(초)        횟수  중앙값  최대')
+        for k in sorted(groups):
+            v = groups[k]
+            add(f'{k:<22}{len(v):>5}{statistics.median(v):>8.2f}{max(v):>7.2f}')
+    bad = [ln for ln in lines if '실패' in ln or 'Traceback' in ln or 'Error' in ln][-20:]
+    add('')
+    add('최근 실패·오류 (최대 20줄)' + ('' if bad else ': 없음'))
+    out.extend(_URL_ID.sub('macros/s/…', ln) for ln in bad)
+    add('')
+    add('app.log 마지막 25줄')
+    out.extend(_URL_ID.sub('macros/s/…', ln) for ln in lines[-25:])
+    return '\n'.join(out) + '\n'
+
+
 def check_min_version(url):
     """(선택) 너무 낡은 버전은 실행을 막는다. url 은 {"min_version": "0.1.0"} 같은 JSON 주소."""
     try:
@@ -897,9 +981,17 @@ def main(argv=None):
     ap.add_argument('--browser', action='store_true', help='앱 창 대신 기본 브라우저로 열기 (시험용)')
     ap.add_argument('--reset', action='store_true', help='저장된 로그인과 화면 저장본을 지우고 시작')
     ap.add_argument('--version', action='store_true')
+    ap.add_argument('--diag', action='store_true', help='문제가 생겼을 때 보낼 점검 파일을 만든다 (비밀번호·로그인 열쇠는 들어가지 않음)')
     a = ap.parse_args(argv)
     if a.version:
         print(APP_VERSION)
+        return 0
+    if a.diag:
+        text = collect_diag()
+        desk = Path.home() / 'Desktop'
+        dest = (desk if desk.is_dir() else data_dir()) / f"wj_점검_{time.strftime('%Y%m%d_%H%M')}.txt"
+        dest.write_text(text, encoding='utf-8-sig')
+        print('점검 파일을 만들었습니다:', dest)
         return 0
     url = load_api_url(a.api_url)
     if not url:
@@ -916,6 +1008,7 @@ def main(argv=None):
         if not ok:
             notify(f'이 앱({APP_VERSION})은 너무 오래되었습니다. {need} 이상으로 업데이트하세요.')
             return 3
+    log(st, f"== 시작 {time.strftime('%Y-%m-%d %H:%M')}  v{APP_VERSION} ==")
     start_server(st)
     if st.session:                                             # 어제 로그인이 아직 유효하면 열기 전에 미리 받아 둔다
         prefetch(st, delay=1.0)
@@ -938,7 +1031,7 @@ def main(argv=None):
                 time.sleep(3600)
         except KeyboardInterrupt:
             return 0
-    webview.create_window(APP_TITLE, start_url, width=1500, height=950, min_size=(1000, 600))
+    webview.create_window(f'{APP_TITLE}  v{APP_VERSION}', start_url, width=1500, height=950, min_size=(1000, 600))
     webview.start()
     return 0
 

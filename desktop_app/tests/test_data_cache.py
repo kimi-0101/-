@@ -389,6 +389,54 @@ class TestConsoleEncoding(AppCase):
                 ctypes.windll.user32.MessageBoxW = orig_box
 
 
+class TestDiagAndLog(unittest.TestCase):
+    """시범 운영 중 직원이 보내는 점검 파일에는 비밀(로그인 열쇠·비밀번호·서버 주소 전체)이 들어가지 않아야 하고, 기록 파일은 끝없이 커지지 않아야 한다."""
+
+    def test_diag_has_no_secrets_and_summarizes_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'session.json').write_text(json.dumps({'token': 'SECRET-TOKEN-123', 'me': {'id': 'tw'}, 'who': '홍길동', 'at': time.time()}), encoding='utf-8')
+            (root / 'cred.bin').write_bytes(b'ENCRYPTED-PASSWORD-BYTES')
+            (root / 'cache').mkdir()
+            (root / 'cache' / 'x.json').write_text('{}', encoding='utf-8')
+            (root / 'app.log').write_text(
+                '09:00:01 [서버] login  3.1초\n'
+                '09:00:05 [화면] journal_TW 저장본 0.00초\n'
+                '09:00:06 [글] TW W40 0.02초 (저장본 1개 / 서버 0개)\n'
+                '09:00:07 [서버] save  실패 3.0초: <HTTPError 500> https://script.google.com/macros/s/AKfycbSECRETDEPLOYID/exec\n', encoding='utf-8')
+            old = os.environ.get('WJ_API_URL')
+            os.environ['WJ_API_URL'] = 'https://script.google.com/macros/s/AKfycbSECRETDEPLOYID/exec'
+            try:
+                text = wj_app.collect_diag(root)
+            finally:
+                if old is None:
+                    os.environ.pop('WJ_API_URL', None)
+                else:
+                    os.environ['WJ_API_URL'] = old
+        for secret in ('SECRET-TOKEN-123', 'ENCRYPTED-PASSWORD', 'AKfycbSECRETDEPLOYID'):
+            self.assertNotIn(secret, text)
+        self.assertIn(wj_app.APP_VERSION, text)
+        self.assertIn('script.google.com', text)             # 어느 서버를 쓰는지는 알 수 있게 (주소 전체는 아님)
+        self.assertIn('로그인: tw', text)
+        self.assertIn('자동 로그인: 켜짐', text)
+        self.assertIn('서버:login', text)
+        self.assertIn('실패', text)
+
+    def test_diag_on_empty_folder_does_not_raise(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            text = wj_app.collect_diag(Path(tmp))
+        self.assertIn('저장된 로그인 없음', text)
+        self.assertIn('app.log: 0줄', text)
+
+    def test_log_rotates_when_too_big(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            st = wj_app.State('http://x/exec', root=tmp)
+            (Path(tmp) / 'app.log').write_bytes(b'x' * (wj_app.LOG_MAX + 10))
+            wj_app.log(st, '[서버] login  0.1초')
+            self.assertTrue((Path(tmp) / 'app.log.1').exists())
+            self.assertLess((Path(tmp) / 'app.log').stat().st_size, 1000)
+
+
 class TestConcurrentWrites(unittest.TestCase):
     """같은 저장본을 여러 스레드가 동시에 갱신해도(병렬 미리 받기 + 화면 요청) 파일이 깨지거나 예외가 나지 않는지.
     고정된 임시 파일 이름(.tmp)을 쓰던 때는 스레드끼리 같은 임시 파일을 덮어쓰다 깨지거나, 윈도우에서 PermissionError 가 났다."""
