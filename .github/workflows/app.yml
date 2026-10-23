@@ -81,6 +81,31 @@ jobs:
       - name: install_wj.ps1 실행 (바탕화면 아이콘 + 로그인 시 자동 실행)
         shell: powershell
         run: .\desktop_app\install_wj.ps1 -ApiUrl "http://127.0.0.1:9/exec" -Startup
+      - name: (진단) 설치 직후 상태 — 실패해도 항상 출력
+        if: always()
+        shell: powershell
+        run: |
+          $app = Join-Path $env:LOCALAPPDATA 'WJApp'
+          Write-Host "== $app"
+          if (Test-Path $app) { Get-ChildItem $app -Recurse -Depth 3 | Select-Object -First 60 | ForEach-Object { Write-Host $_.FullName } } else { Write-Host '설치 폴더 자체가 없음' }
+          $desk = [Environment]::GetFolderPath('Desktop')
+          Write-Host "== Desktop = $desk  exists=$(Test-Path $desk)"
+          Write-Host "== 콘솔 인코딩: $([Console]::OutputEncoding.WebName)  PS $($PSVersionTable.PSVersion)"
+          $name = [string]::Concat([char]0xC601, [char]0xC5C5, [char]0xC77C, [char]0xC9C0, '.lnk')
+          Write-Host "== 한글 이름 길이=$($name.Length) 코드=$(($name.ToCharArray() | ForEach-Object { '{0:X4}' -f [int]$_ }) -join ' ')"
+          try {
+            $sh = New-Object -ComObject WScript.Shell
+            $t = Join-Path $desk 'wjtest.lnk'
+            $s = $sh.CreateShortcut($t); $s.TargetPath = 'C:\Windows\System32\notepad.exe'; $s.Save()
+            Write-Host "영어 이름 바로가기 저장: 성공 ($(Test-Path $t))"
+            Remove-Item $t -Force
+          } catch { Write-Host "영어 이름 바로가기 저장: 실패 $($_.Exception.Message)" }
+          try {
+            $t = Join-Path $desk $name
+            $s = $sh.CreateShortcut($t); $s.TargetPath = 'C:\Windows\System32\notepad.exe'; $s.Save()
+            Write-Host "한글 이름 바로가기 저장: 성공 ($(Test-Path $t))"
+            Remove-Item $t -Force
+          } catch { Write-Host "한글 이름 바로가기 저장: 실패 $($_.Exception.Message)" }
       - name: 설치 결과 확인
         shell: powershell
         run: |

@@ -68,7 +68,9 @@ function New-WJLink($path) {
     if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }   # 바탕화면/시작 프로그램 폴더가 없는 PC 에서도 되도록
     $sh = New-Object -ComObject WScript.Shell
     $s = $sh.CreateShortcut($path)
-    $s.TargetPath = Join-Path $Venv 'Scripts\pythonw.exe'
+    $target = Join-Path $Venv 'Scripts\pythonw.exe'
+    if (-not (Test-Path $target)) { throw "venv 의 pythonw.exe 가 없습니다: $target" }
+    $s.TargetPath = $target
     $s.Arguments = '"' + (Join-Path $Dir 'wj_app.py') + '"'
     $s.WorkingDirectory = $Dir
     $s.Description = 'Weekly Journal App'
