@@ -98,7 +98,10 @@ class UpstreamError(Exception):
 
 def notify(msg):
     """오류를 화면에 알린다. 바로가기(pythonw)로 켠 경우엔 콘솔이 없어서 print 만으로는 보이지 않으므로 윈도우 메시지 창도 띄운다."""
-    print(msg)
+    try:
+        print(msg)
+    except Exception:
+        pass
     if sys.stdout is None or not getattr(sys.stdout, 'isatty', lambda: False)():
         try:
             import ctypes
@@ -110,7 +113,13 @@ def notify(msg):
 def log(st, msg):
     """걸린 시간 등을 화면에 찍고 app.log 에도 남긴다 (느릴 때 어디서 걸리는지 보려는 용도)."""
     line = f"{time.strftime('%H:%M:%S')} {msg}"
-    print(line, flush=True)
+    try:
+        print(line, flush=True)
+    except Exception:                                           # 콘솔이 한글을 못 쓰거나(cp1252 등) 닫혀 있어도 로그 한 줄 때문에 요청 처리가 죽지 않게
+        try:
+            print(line.encode('ascii', 'replace').decode('ascii'), flush=True)
+        except Exception:
+            pass
     try:
         with open(st.root / 'app.log', 'a', encoding='utf-8') as f:
             f.write(line + '\n')
@@ -809,12 +818,17 @@ class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def handle_error(self, request, client_address):      # 창을 닫으며 끊긴 연결 등은 조용히 넘긴다
-        pass
+    st = None
+
+    def handle_error(self, request, client_address):      # 창을 닫으며 끊긴 연결 등은 조용히 넘기고, 그 밖의 예외는 app.log 에 남긴다(원인을 알 수 있게)
+        exc = sys.exc_info()[1]
+        if self.st is not None and not isinstance(exc, (ConnectionError, TimeoutError, OSError)):
+            log(self.st, f'[오류] 요청 처리 중 예외: {exc!r}')
 
 
 def start_server(st, port=0):
     srv = Server(('127.0.0.1', port), make_handler(st))
+    srv.st = st
     st.port = srv.server_address[1]
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv

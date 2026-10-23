@@ -354,5 +354,31 @@ class TestAutoLogin(AppCase):
         self.assertNotIn('id="rm"', body)
 
 
+class TestConsoleEncoding(AppCase):
+    """윈도우 콘솔(cp1252)에서 한글 로그 줄이 요청 처리를 죽이지 않는지 (실제 윈도우 CI 에서 27개 시험이 전부 이 때문에 죽었음)."""
+
+    def test_requests_survive_a_console_that_cannot_print_korean(self):
+        import io
+        real = sys.stdout
+        sys.stdout = io.TextIOWrapper(io.BytesIO(), encoding='cp1252', errors='strict')
+        try:
+            r = self.api('/app/login', {'id': 'tw', 'password': 'pw12345678', 'who': 't'})
+            p = self.pull()
+        finally:
+            sys.stdout = real
+        self.assertTrue(r['ok'])
+        self.assertTrue(p['ok'])
+
+    def test_log_and_notify_never_raise(self):
+        import io
+        real = sys.stdout
+        sys.stdout = io.TextIOWrapper(io.BytesIO(), encoding='cp1252', errors='strict')
+        try:
+            wj_app.log(self.st, '[서버] page 한글 0.1초')
+            wj_app.notify('한글 메시지')
+        finally:
+            sys.stdout = real
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

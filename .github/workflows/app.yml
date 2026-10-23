@@ -148,9 +148,15 @@ jobs:
       - name: 윈도우 실제 환경 점검 (DPAPI 암호화, 앱 서버, 자동 로그인)
         run: python -I desktop_app/tests/win_smoke.py
       - name: 앱 시험을 윈도우에서도 (저장본·속도 도구)
+        shell: powershell
         run: |
+          # Windows PowerShell 은 마지막 명령의 종료코드만 단계 결과로 삼으므로, 명령마다 직접 검사한다
           python -I desktop_app/tests/test_data_cache.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -I desktop_app/tests/test_bench.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -I desktop_app/tests/test_data_cache.py -k Console
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: 삭제 (-Uninstall)
         shell: powershell
         run: |
