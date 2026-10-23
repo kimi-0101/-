@@ -222,10 +222,14 @@ class State:
         return self.root / 'cache' / (name.replace('@', '_at_') + '.json')
 
     def cache_get(self, name):
-        try:
-            return json.loads(self._cpath(name).read_text(encoding='utf-8'))
-        except Exception:
-            return None
+        for _ in range(4):
+            try:
+                return json.loads(self._cpath(name).read_text(encoding='utf-8'))
+            except PermissionError:                                   # 윈도우: 다른 스레드가 저장본을 교체하는 순간에는 잠깐 열 수 없다 → 없는 것으로 보지 말고 다시 시도
+                time.sleep(0.03)
+            except Exception:
+                return None
+        return None
 
     def cache_put(self, name, r):
         c = dict(name=name, html=r['html'], status=r.get('status', ''), asOf=r.get('asOf', ''), at=time.time())
